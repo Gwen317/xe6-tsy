@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(asr-replay): Add a sanitized provider-response replay adapter with fixed fixtures and deterministic timing. Do not store real citizen audio or raw provider secrets. Remove this file when implemented.

@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(api-matter): Define matter-domain contracts, ownership, commands, queries, and tests before adding handlers or persistence. Do not infer matter results from model output without human review. Remove this file when real code is added.

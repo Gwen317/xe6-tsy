@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(model-approved-provider): Add the approved model adapter behind the model port with timeouts, cancellation, safe error mapping, and redacted logging. Never commit API keys or real prompts. Remove this file when implemented.

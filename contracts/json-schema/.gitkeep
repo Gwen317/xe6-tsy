@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(json-schema-path-decision): Define shared JSON Schemas here only after resolving contracts versus packages/contracts ownership. Generated consumers must use one source of truth. Remove this file after the decision.

@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(rag-ragflow): Add the RAGFlow adapter only after its versioned API contract, authentication, timeout, failure mapping, and source-citation behavior are approved and tested. Remove this file when implemented.

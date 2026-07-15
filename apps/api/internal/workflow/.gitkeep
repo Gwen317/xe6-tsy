@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(api-workflow): Define orchestration states and module-call boundaries without owning other modules' data. Add deterministic transition and failure tests before implementation. Remove this file when real code is added.

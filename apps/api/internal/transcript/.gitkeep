@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(api-transcript): Define transcript event, correction, confidence, speaker, cancellation, and retention contracts before ASR integration. Use only synthetic fixtures in tests. Remove this file when real code is added.

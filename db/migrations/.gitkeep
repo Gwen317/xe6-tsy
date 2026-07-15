@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(db-migrations): Add reviewed, reversible migrations only after repository and data-retention designs are approved. Each migration needs up/down behavior and integration verification; never include secrets or real citizen data. Remove this file when migrations exist.

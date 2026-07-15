@@ -1,0 +1,203 @@
+openapi: 3.1.0
+info:
+  title: xe6-tsy Identity and Access API
+  version: 0.1.0-placeholder
+  description: >-
+    Placeholder contract for staff login, access sessions, and authorization.
+    Every operation returns 501 until a later implementation stage.
+x-implementation-status: placeholder
+x-todo: >-
+  Implement identity-provider, access-session, membership, authorization, audit,
+  and persistence boundaries before adding any success response to this contract.
+paths:
+  /api/v1/identity/access-sessions:
+    post:
+      operationId: startAccessSession
+      summary: Start a staff access session
+      tags: [identity]
+      x-todo: >-
+        Authenticate through an approved provider, resolve scoped membership,
+        create an expiring session, map safe errors, and add handler/service tests.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartAccessSessionRequest"
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/identity/access-sessions/{access_session_id}:
+    get:
+      operationId: getAccessContext
+      summary: Read the current access context
+      tags: [identity]
+      x-todo: >-
+        Load an active non-revoked session, enforce organization scope, and avoid
+        leaking whether out-of-scope operators or memberships exist.
+      parameters:
+        - $ref: "#/components/parameters/AccessSessionID"
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/identity/authorizations:
+    post:
+      operationId: authorizeAction
+      summary: Evaluate an action against the current access scope
+      tags: [authorization]
+      x-todo: >-
+        Implement deny-by-default role and resource-scope evaluation with a
+        versioned policy decision and permission-matrix tests.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthorizationRequest"
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/identity/access-sessions/{access_session_id}/end:
+    post:
+      operationId: endAccessSession
+      summary: End an access session
+      tags: [identity]
+      x-todo: >-
+        End the caller session idempotently with optimistic concurrency and an
+        audit event; test repeated, stale, expired, and missing-session requests.
+      parameters:
+        - $ref: "#/components/parameters/AccessSessionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EndAccessSessionRequest"
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/identity/memberships/{membership_id}/revocations:
+    post:
+      operationId: revokeMembership
+      summary: Revoke an organization membership
+      tags: [authorization]
+      x-todo: >-
+        Authorize the actor, revoke within organization scope, define related
+        session invalidation, audit the action, and test privilege escalation.
+      parameters:
+        - name: membership_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeAccessRequest"
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+  /api/v1/identity/access-sessions/{access_session_id}/revocations:
+    post:
+      operationId: revokeAccessSession
+      summary: Revoke an access session
+      tags: [authorization]
+      x-todo: >-
+        Authorize the actor, revoke the target session idempotently, enforce
+        organization scope, audit the action, and test stale-version retries.
+      parameters:
+        - $ref: "#/components/parameters/AccessSessionID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeAccessRequest"
+      responses:
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+components:
+  parameters:
+    AccessSessionID:
+      name: access_session_id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    StartAccessSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+          writeOnly: true
+    AuthorizationRequest:
+      type: object
+      additionalProperties: false
+      required: [access_session_id, action, organization_id]
+      properties:
+        access_session_id:
+          type: string
+        action:
+          type: string
+        organization_id:
+          type: string
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+        service_point_id:
+          type: string
+        window_id:
+          type: string
+    EndAccessSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version:
+          type: integer
+          format: int64
+          minimum: 1
+    RevokeAccessRequest:
+      type: object
+      additionalProperties: false
+      required: [actor_id, reason, expected_version]
+      properties:
+        actor_id:
+          type: string
+        reason:
+          type: string
+        expected_version:
+          type: integer
+          format: int64
+          minimum: 1
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              const: NOT_IMPLEMENTED
+            message:
+              type: string
+  responses:
+    NotImplemented:
+      description: The identity or authorization capability is not implemented yet.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

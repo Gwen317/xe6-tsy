@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(asr-approved-provider): Add the approved production ASR adapter only after provider selection, security review, timeout/cancellation rules, and contract tests. Never commit credentials. Remove this file when real adapter files are added.

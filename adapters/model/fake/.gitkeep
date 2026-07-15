@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(model-fake): Add a deterministic offline model fake for tests, including controlled low-confidence and dependency-failure results. It must not simulate final human approval. Remove this file when implemented.

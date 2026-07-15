@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(eval-retrieval): Add deterministic retrieval evaluation for relevance, citation correctness, tenant isolation, stale sources, empty results, and regression thresholds. Remove this file when implemented.

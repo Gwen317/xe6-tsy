@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(openapi-path-decision): OpenAPI placeholders currently live in packages/contracts/openapi. Before adding files here, select one authoritative contract root and migrate atomically; never maintain duplicate schemas. Remove this file after the decision.

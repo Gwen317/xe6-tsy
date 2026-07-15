@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(identity-path-decision): This early-layout directory overlaps apps/api/internal/modules/identity. Before adding code, choose one authoritative package path and migrate atomically; never implement identity in both locations. Remove this file after the decision.

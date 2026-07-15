@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(asyncapi-path-decision): Define event contracts here only if contracts remains authoritative; current guidance names packages/contracts as the shared source. Resolve the duplicate contract roots before adding schemas. Remove this file after the decision.

@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(api-audit): Define append-only audit ports and safe event fields for identity, authorization, knowledge review, publication, and revocation. Exclude credentials and sensitive content. Remove this file when real code is added.

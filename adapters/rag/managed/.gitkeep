@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(rag-managed): Add a managed RAG service adapter after vendor approval, data-boundary review, tenant isolation, timeout, and citation contract tests. Never commit service credentials. Remove this file when implemented.

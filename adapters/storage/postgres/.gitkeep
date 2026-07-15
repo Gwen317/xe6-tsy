@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(storage-postgres): Add PostgreSQL repositories and integration tests only after domain repository ports and migrations are approved. Keep integration tests build-tagged and never embed production connection strings. Remove this file when implemented.

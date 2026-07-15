@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(api-telemetry): Define metrics and tracing fields that exclude credentials, raw transcripts, policy text, and citizen data. Add correlation and latency instrumentation only after the privacy schema is reviewed. Remove this file when implemented.

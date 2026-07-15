@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(rag-fake): Add a deterministic offline retrieval fake with synthetic documents, fixed ranking, empty-result, stale-source, and failure scenarios. Remove this file when implemented.

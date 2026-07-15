@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(api-reception): Define reception-session lifecycle contracts, organization/window scope, cancellation, and tests before implementation. Do not persist audio by default. Remove this file when real code is added.

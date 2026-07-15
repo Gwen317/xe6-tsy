@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(frontend-final-review): Add the staff final-review feature after API contracts exist, covering loading, empty, validation, low-confidence, source, error, retry, and explicit-confirmation states. Remove this file when implemented.

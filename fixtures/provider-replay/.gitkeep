@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(fixtures-provider-replay): Add sanitized, deterministic provider responses with secrets and personal data removed, plus expected adapter behavior. Remove this file when fixtures exist.

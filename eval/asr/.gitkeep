@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(eval-asr): Add reproducible ASR evaluation cases using synthetic or approved sanitized audio, fixed metrics, dialect slices, and regression thresholds. Remove this file when the evaluation suite exists.

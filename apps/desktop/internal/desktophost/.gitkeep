@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(desktophost): Add Wails bindings for window, device permission, update, and API-client capabilities behind narrow interfaces. Do not place domain state or provider credentials here. Remove this file when implemented.

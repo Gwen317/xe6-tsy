@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(knowledge-path-decision): This early-layout directory overlaps configuration knowledge contracts and the future runtime knowledge module. Define ownership between publication configuration and RAG retrieval before adding code; never duplicate state. Remove this file after the decision.

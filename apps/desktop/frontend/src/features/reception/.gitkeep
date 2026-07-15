@@ -1,1 +1,1 @@
-Placeholder to keep this directory in Git.
+TODO(frontend-reception): Add the reception workflow UI after service contracts exist, including device permission, start/cancel, dependency failure, and narrow-window states. Keep authoritative session state in the API. Remove this file when implemented.

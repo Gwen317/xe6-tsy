@@ -1,13 +1,14 @@
 # services/api
 
-Go 应用 API，负责会话、信令、语言配置和状态快照，不是管理后台。
+Go 应用控制服务，负责业务会话、语言配置、数据访问和状态快照，不是管理后台，也不承载 WebRTC 连接。
 
 ## 职责
 
 - 会话创建/结束
-- WebRTC 信令：offer/answer、ICE candidate
+- 编排实时会话启动和停止
 - 可选语言列表和语言对配置
 - 演示客户端/设备接入
+- 校验会话归属并签发短期实时连接票据
 - 会话状态快照查询
 - 健康检查
 - 必要的调试记录
@@ -18,6 +19,8 @@ Go 应用 API，负责会话、信令、语言配置和状态快照，不是管�
 ## 非职责
 
 - 不处理实时音频流
+- 不交换 SDP offer/answer 或 ICE candidate
+- 不创建和保存 PeerConnection、DataChannel、Audio Track
 - 不直接调用 ASR/翻译/TTS
 - 不维护播放状态机
 - 不做组织权限、订单、套餐、支付、发票、术语库和管理后台
@@ -30,9 +33,9 @@ services/api/
 ├── main.go
 ├── config/
 ├── devices/
-├── signaling/
 ├── sessions/
 ├── languages/
+├── realtimeaccess/            # 会话鉴权和短期实时连接票据
 ├── internal/
 │   ├── accounts/
 │   ├── usage/
@@ -42,6 +45,12 @@ services/api/
 ├── health/
 └── webapi/
 ```
+
+WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
+统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
+
+结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
+本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。
 
 账户、用量和消息投递提供可编译契约和可注入的业务编排：
 

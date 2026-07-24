@@ -82,6 +82,23 @@ type CreateRetryRecord struct {
 	IdempotencyKey string
 }
 
+type AttemptWork struct {
+	Message Message
+	Attempt DeliveryAttempt
+}
+
+// AttemptCompletion is committed atomically. When NextAttempt is present the
+// repository also writes its outbox record in the same transaction.
+type AttemptCompletion struct {
+	AttemptID     string
+	MessageID     string
+	AttemptStatus DeliveryAttemptStatus
+	MessageStatus MessageStatus
+	ErrorCode     *string
+	FinishedAt    time.Time
+	NextAttempt   *DeliveryAttempt
+}
+
 type VerifiedDestination struct {
 	AccountID      string
 	Channel        Channel

@@ -12,13 +12,17 @@ type QueueMessage struct {
 
 type Repository interface {
 	// CreateMessage atomically persists the message, initial attempt, and outbox record.
-	CreateMessage(context.Context, CreateMessageRecord) error
+	// Reusing an idempotency key returns the original Message.
+	CreateMessage(context.Context, CreateMessageRecord) (Message, error)
 	GetMessage(context.Context, string, string) (Message, error)
 	// CreateRetry atomically persists the next attempt, message state, and outbox record.
 	CreateRetry(context.Context, CreateRetryRecord) (Message, error)
-	GetAttempt(context.Context, string) (DeliveryAttempt, error)
-	SetMessageStatus(context.Context, string, MessageStatus, *string) error
-	SetAttemptStatus(context.Context, string, DeliveryAttemptStatus, *string) error
+	// ClaimAttempt atomically changes a queued attempt and its message to sending.
+	// claimed=false means another worker already owns or completed this attempt.
+	ClaimAttempt(context.Context, string, time.Time) (AttemptWork, bool, error)
+	// CompleteAttempt atomically completes the current attempt and optionally
+	// creates the next attempt plus its outbox record.
+	CompleteAttempt(context.Context, AttemptCompletion) error
 	ListPreferences(context.Context, string) ([]Preference, error)
 	PutPreference(context.Context, Preference) (Preference, error)
 }
@@ -34,6 +38,12 @@ type DestinationReader interface {
 
 type Provider interface {
 	Send(context.Context, SendRequest) error
+}
+
+type ProviderFailure interface {
+	error
+	Code() string
+	Retryable() bool
 }
 
 type Queue interface {

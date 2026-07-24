@@ -43,5 +43,13 @@ services/api/
 └── webapi/
 ```
 
-账户、用量和消息投递当前为可编译契约骨架。未接入数据库、验证码发送、Token
-签发、队列或 Email Provider 的业务方法必须返回 `not_implemented`，不得伪造成功结果。
+账户、用量和消息投递提供可编译契约和可注入的业务编排：
+
+- Access Token 支持 HS256 签发、验签和认证 Context 注入；
+- Usage Service 校验事件版本、计量字段和 Session 归属，再调用幂等 Repository；
+- Delivery Service 校验渠道偏好、目标和 final Turn，原子创建 Message、Attempt 与 Outbox；
+- Delivery Worker 通过原子领取/完成边界处理 Ack、Nack 和最多三次指数退避重试。
+
+`main.go` 尚未装配数据库 Repository、跨模块 Reader、验证码发送、Queue 或 Email
+Provider。缺少这些生产依赖时，对应业务方法必须继续返回 `not_implemented`，不得伪造成功结果。
+Email Provider 仍为占位边界，不执行真实邮件发送。

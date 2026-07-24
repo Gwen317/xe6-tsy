@@ -28,6 +28,14 @@ const (
 	AttemptStatusFailed    DeliveryAttemptStatus = "failed"
 )
 
+// IdempotencyOperation separates keys reused by distinct write endpoints.
+type IdempotencyOperation string
+
+const (
+	IdempotencyOperationCreateMessage IdempotencyOperation = "create_message"
+	IdempotencyOperationRetryMessage  IdempotencyOperation = "retry_message"
+)
+
 // FinalTurnSnapshot matches the read boundary provided by the turns module.
 // Once copied into a Message, these fields are never refreshed during retries.
 type FinalTurnSnapshot struct {
@@ -70,16 +78,25 @@ type DeliveryAttempt struct {
 }
 
 type CreateMessageRecord struct {
-	Message        Message
-	InitialAttempt DeliveryAttempt
-	IdempotencyKey string
+	Message            Message
+	InitialAttempt     DeliveryAttempt
+	IdempotencyKey     string
+	RequestFingerprint string
 }
 
 type CreateRetryRecord struct {
-	AccountID      string
-	MessageID      string
-	Attempt        DeliveryAttempt
-	IdempotencyKey string
+	AccountID          string
+	MessageID          string
+	Attempt            DeliveryAttempt
+	IdempotencyKey     string
+	RequestFingerprint string
+}
+
+// IdempotencyResult preserves the original response and the request identity
+// used to reject accidental reuse of a key for different work.
+type IdempotencyResult struct {
+	RequestFingerprint string
+	Message            Message
 }
 
 type AttemptWork struct {

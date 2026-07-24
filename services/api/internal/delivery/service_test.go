@@ -10,33 +10,53 @@ import (
 )
 
 type deliveryRepositoryFake struct {
-	created       CreateMessageRecord
-	createResult  Message
-	message       Message
-	retry         CreateRetryRecord
-	retryResult   Message
-	work          AttemptWork
-	claimed       bool
-	claimErr      error
-	completion    AttemptCompletion
-	completionErr error
-	preferences   []Preference
-	putPreference Preference
+	created             CreateMessageRecord
+	createResult        Message
+	createErr           error
+	message             Message
+	getMessageCalls     int
+	retry               CreateRetryRecord
+	retryResult         Message
+	retryErr            error
+	idempotencyResult   IdempotencyResult
+	idempotencyFound    bool
+	idempotencyErr      error
+	idempotencyLookup   func(string, IdempotencyOperation, string) (IdempotencyResult, bool, error)
+	idempotencyCalls    int
+	work                AttemptWork
+	claimed             bool
+	claimErr            error
+	completion          AttemptCompletion
+	completionErr       error
+	preferences         []Preference
+	preferenceListCalls int
+	putPreference       Preference
 }
 
 func (f *deliveryRepositoryFake) CreateMessage(_ context.Context, record CreateMessageRecord) (Message, error) {
 	f.created = record
+	if f.createErr != nil {
+		return Message{}, f.createErr
+	}
 	if f.createResult.ID != "" {
 		return f.createResult, nil
 	}
 	return record.Message, nil
 }
 func (f *deliveryRepositoryFake) GetMessage(context.Context, string, string) (Message, error) {
+	f.getMessageCalls++
 	return f.message, nil
 }
 func (f *deliveryRepositoryFake) CreateRetry(_ context.Context, record CreateRetryRecord) (Message, error) {
 	f.retry = record
-	return f.retryResult, nil
+	return f.retryResult, f.retryErr
+}
+func (f *deliveryRepositoryFake) GetIdempotencyResult(_ context.Context, accountID string, operation IdempotencyOperation, key string) (IdempotencyResult, bool, error) {
+	f.idempotencyCalls++
+	if f.idempotencyLookup != nil {
+		return f.idempotencyLookup(accountID, operation, key)
+	}
+	return f.idempotencyResult, f.idempotencyFound, f.idempotencyErr
 }
 func (f *deliveryRepositoryFake) ClaimAttempt(context.Context, string, time.Time) (AttemptWork, bool, error) {
 	return f.work, f.claimed, f.claimErr
@@ -46,6 +66,7 @@ func (f *deliveryRepositoryFake) CompleteAttempt(_ context.Context, completion A
 	return f.completionErr
 }
 func (f *deliveryRepositoryFake) ListPreferences(context.Context, string) ([]Preference, error) {
+	f.preferenceListCalls++
 	return f.preferences, nil
 }
 func (f *deliveryRepositoryFake) PutPreference(_ context.Context, preference Preference) (Preference, error) {
@@ -124,11 +145,104 @@ func TestCreateBuildsImmutableSnapshotAndAtomicRecord(t *testing.T) {
 	if len(message.Turns) != 2 || message.Turns[0].TurnID != "turn-1" || message.Turns[1].TurnID != "turn-2" {
 		t.Fatalf("turn order = %#v", message.Turns)
 	}
-	if repository.created.InitialAttempt.MessageID != message.ID || repository.created.InitialAttempt.AttemptNumber != 1 || repository.created.IdempotencyKey != "create-1" {
+	if repository.created.InitialAttempt.MessageID != message.ID || repository.created.InitialAttempt.AttemptNumber != 1 || repository.created.IdempotencyKey != "create-1" || repository.created.RequestFingerprint == "" {
 		t.Fatalf("atomic record = %#v", repository.created)
 	}
 	if repository.created.Message.Turns[0].SourceText == "" {
 		t.Fatal("message did not preserve turn text snapshot")
+	}
+}
+
+func TestCreateReplaysResultBeforeMutableBusinessChecks(t *testing.T) {
+	input := CreateInput{
+		AccountID:      "account-1",
+		IdempotencyKey: "create-1",
+		Channel:        ChannelEmail,
+		DestinationRef: "verified-email",
+		TurnIDs:        []string{"turn-1"},
+	}
+	fingerprint, err := createRequestFingerprint(input)
+	if err != nil {
+		t.Fatalf("createRequestFingerprint() error = %v", err)
+	}
+	want := Message{ID: "original-message", AccountID: "account-1", Status: MessageStatusQueued}
+	repository := &deliveryRepositoryFake{
+		idempotencyResult: IdempotencyResult{RequestFingerprint: fingerprint, Message: want},
+		idempotencyFound:  true,
+	}
+	service := configuredDeliveryService(
+		repository,
+		turnReaderFake{err: domain.ErrForbidden},
+		destinationReaderFake{err: domain.ErrForbidden},
+	)
+
+	got, err := service.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Create() replay error = %v", err)
+	}
+	if got.ID != want.ID || repository.preferenceListCalls != 0 || repository.created.Message.ID != "" {
+		t.Fatalf("Create() replay = %#v, preference calls = %d, created = %#v", got, repository.preferenceListCalls, repository.created)
+	}
+}
+
+func TestCreateRejectsReusedKeyWithDifferentRequest(t *testing.T) {
+	original := CreateInput{Channel: ChannelEmail, DestinationRef: "verified-email", TurnIDs: []string{"turn-1"}}
+	fingerprint, err := createRequestFingerprint(original)
+	if err != nil {
+		t.Fatalf("createRequestFingerprint() error = %v", err)
+	}
+	repository := &deliveryRepositoryFake{
+		idempotencyResult: IdempotencyResult{RequestFingerprint: fingerprint, Message: Message{ID: "original-message"}},
+		idempotencyFound:  true,
+	}
+	service := configuredDeliveryService(repository, turnReaderFake{}, destinationReaderFake{})
+
+	_, err = service.Create(context.Background(), CreateInput{
+		AccountID: "account-1", IdempotencyKey: "create-1", Channel: ChannelEmail,
+		DestinationRef: "verified-email", TurnIDs: []string{"turn-2"},
+	})
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("Create() reused key error = %v, want conflict", err)
+	}
+	if repository.preferenceListCalls != 0 {
+		t.Fatalf("mutable checks ran %d times", repository.preferenceListCalls)
+	}
+}
+
+func TestCreateLoadsConcurrentWinningResult(t *testing.T) {
+	input := CreateInput{
+		AccountID: "account-1", IdempotencyKey: "create-1", Channel: ChannelEmail,
+		DestinationRef: "verified-email", TurnIDs: []string{"turn-1"},
+	}
+	fingerprint, err := createRequestFingerprint(input)
+	if err != nil {
+		t.Fatalf("createRequestFingerprint() error = %v", err)
+	}
+	winner := Message{ID: "winning-message", AccountID: "account-1", Status: MessageStatusQueued}
+	repository := &deliveryRepositoryFake{
+		createErr:   domain.ErrConflict,
+		preferences: []Preference{{Channel: ChannelEmail, Enabled: true, Verified: true}},
+	}
+	repository.idempotencyLookup = func(string, IdempotencyOperation, string) (IdempotencyResult, bool, error) {
+		if repository.idempotencyCalls == 1 {
+			return IdempotencyResult{}, false, nil
+		}
+		return IdempotencyResult{RequestFingerprint: fingerprint, Message: winner}, true, nil
+	}
+	service := configuredDeliveryService(
+		repository,
+		turnReaderFake{turns: []FinalTurnSnapshot{finalTurn("turn-1")}},
+		destinationReaderFake{destination: VerifiedDestination{
+			AccountID: "account-1", Channel: ChannelEmail, DestinationRef: "verified-email", ProviderTarget: "target",
+		}},
+	)
+
+	got, err := service.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Create() concurrent replay error = %v", err)
+	}
+	if got.ID != winner.ID || repository.idempotencyCalls != 2 {
+		t.Fatalf("Create() = %#v, idempotency calls = %d", got, repository.idempotencyCalls)
 	}
 }
 
@@ -208,7 +322,7 @@ func TestRetryOnlyCreatesNextAttemptForRetryableMessageState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Retry() error = %v", err)
 	}
-	if message.Status != MessageStatusRetrying || repository.retry.Attempt.AttemptNumber != 2 || repository.retry.IdempotencyKey != "retry-1" {
+	if message.Status != MessageStatusRetrying || repository.retry.Attempt.AttemptNumber != 2 || repository.retry.IdempotencyKey != "retry-1" || repository.retry.RequestFingerprint == "" {
 		t.Fatalf("Retry() = %#v; record=%#v", message, repository.retry)
 	}
 
@@ -216,5 +330,74 @@ func TestRetryOnlyCreatesNextAttemptForRetryableMessageState(t *testing.T) {
 	_, err = service.Retry(context.Background(), "account-1", "message-1", "retry-2")
 	if !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("Retry() sent message error = %v, want conflict", err)
+	}
+}
+
+func TestRetryReplaysResultBeforeReadingCurrentMessageState(t *testing.T) {
+	fingerprint, err := retryRequestFingerprint("message-1")
+	if err != nil {
+		t.Fatalf("retryRequestFingerprint() error = %v", err)
+	}
+	want := Message{ID: "message-1", AccountID: "account-1", Status: MessageStatusRetrying}
+	repository := &deliveryRepositoryFake{
+		message:           Message{ID: "message-1", Status: MessageStatusSent},
+		idempotencyResult: IdempotencyResult{RequestFingerprint: fingerprint, Message: want},
+		idempotencyFound:  true,
+	}
+	service := configuredDeliveryService(repository, turnReaderFake{}, destinationReaderFake{})
+
+	got, err := service.Retry(context.Background(), "account-1", "message-1", "retry-1")
+	if err != nil {
+		t.Fatalf("Retry() replay error = %v", err)
+	}
+	if got.Status != want.Status || repository.getMessageCalls != 0 || repository.retry.Attempt.ID != "" {
+		t.Fatalf("Retry() replay = %#v, message reads = %d, retry = %#v", got, repository.getMessageCalls, repository.retry)
+	}
+}
+
+func TestRetryRejectsReusedKeyForDifferentMessage(t *testing.T) {
+	fingerprint, err := retryRequestFingerprint("message-1")
+	if err != nil {
+		t.Fatalf("retryRequestFingerprint() error = %v", err)
+	}
+	repository := &deliveryRepositoryFake{
+		idempotencyResult: IdempotencyResult{RequestFingerprint: fingerprint, Message: Message{ID: "message-1"}},
+		idempotencyFound:  true,
+	}
+	service := configuredDeliveryService(repository, turnReaderFake{}, destinationReaderFake{})
+
+	_, err = service.Retry(context.Background(), "account-1", "message-2", "retry-1")
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("Retry() reused key error = %v, want conflict", err)
+	}
+	if repository.getMessageCalls != 0 {
+		t.Fatalf("current message was read %d times", repository.getMessageCalls)
+	}
+}
+
+func TestRetryLoadsConcurrentWinningResult(t *testing.T) {
+	fingerprint, err := retryRequestFingerprint("message-1")
+	if err != nil {
+		t.Fatalf("retryRequestFingerprint() error = %v", err)
+	}
+	winner := Message{ID: "message-1", AccountID: "account-1", Status: MessageStatusRetrying}
+	repository := &deliveryRepositoryFake{
+		message:  Message{ID: "message-1", AccountID: "account-1", Status: MessageStatusFailed, Attempts: 1},
+		retryErr: domain.ErrConflict,
+	}
+	repository.idempotencyLookup = func(string, IdempotencyOperation, string) (IdempotencyResult, bool, error) {
+		if repository.idempotencyCalls == 1 {
+			return IdempotencyResult{}, false, nil
+		}
+		return IdempotencyResult{RequestFingerprint: fingerprint, Message: winner}, true, nil
+	}
+	service := configuredDeliveryService(repository, turnReaderFake{}, destinationReaderFake{})
+
+	got, err := service.Retry(context.Background(), "account-1", "message-1", "retry-1")
+	if err != nil {
+		t.Fatalf("Retry() concurrent replay error = %v", err)
+	}
+	if got.Status != winner.Status || repository.idempotencyCalls != 2 {
+		t.Fatalf("Retry() = %#v, idempotency calls = %d", got, repository.idempotencyCalls)
 	}
 }

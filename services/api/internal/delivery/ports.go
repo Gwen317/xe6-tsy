@@ -11,11 +11,16 @@ type QueueMessage struct {
 }
 
 type Repository interface {
-	// CreateMessage atomically persists the message, initial attempt, and outbox record.
-	// Reusing an idempotency key returns the original Message.
+	// GetIdempotencyResult reads a result scoped by account, operation, and key.
+	// Callers compare RequestFingerprint before returning the stored Message.
+	GetIdempotencyResult(context.Context, string, IdempotencyOperation, string) (IdempotencyResult, bool, error)
+	// CreateMessage atomically persists the idempotency result, message, initial
+	// attempt, and outbox record. A concurrent matching request returns the
+	// original Message; a different fingerprint returns domain.ErrConflict.
 	CreateMessage(context.Context, CreateMessageRecord) (Message, error)
 	GetMessage(context.Context, string, string) (Message, error)
-	// CreateRetry atomically persists the next attempt, message state, and outbox record.
+	// CreateRetry applies the same atomic idempotency rules while persisting the
+	// next attempt, message state, and outbox record.
 	CreateRetry(context.Context, CreateRetryRecord) (Message, error)
 	// ClaimAttempt atomically changes a queued attempt and its message to sending.
 	// claimed=false means another worker already owns or completed this attempt.

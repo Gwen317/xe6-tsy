@@ -3,7 +3,10 @@ package delivery
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
@@ -41,6 +44,13 @@ func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, erro
 	}
 	if !validCreateInput(input) {
 		return Message{}, domain.ErrInvalidArgument
+	}
+	fingerprint, err := createRequestFingerprint(input)
+	if err != nil {
+		return Message{}, err
+	}
+	if result, found, err := u.idempotencyResult(ctx, input.AccountID, IdempotencyOperationCreateMessage, input.IdempotencyKey, fingerprint); err != nil || found {
+		return result, err
 	}
 	preferences, err := u.repository.ListPreferences(ctx, input.AccountID)
 	if err != nil {
@@ -92,11 +102,19 @@ func (u *UseCases) Create(ctx context.Context, input CreateInput) (Message, erro
 		Status:        AttemptStatusQueued,
 		CreatedAt:     now,
 	}
-	return u.repository.CreateMessage(ctx, CreateMessageRecord{
-		Message:        message,
-		InitialAttempt: attempt,
-		IdempotencyKey: input.IdempotencyKey,
+	result, err := u.repository.CreateMessage(ctx, CreateMessageRecord{
+		Message:            message,
+		InitialAttempt:     attempt,
+		IdempotencyKey:     input.IdempotencyKey,
+		RequestFingerprint: fingerprint,
 	})
+	if !errors.Is(err, domain.ErrConflict) {
+		return result, err
+	}
+	if replay, found, lookupErr := u.idempotencyResult(ctx, input.AccountID, IdempotencyOperationCreateMessage, input.IdempotencyKey, fingerprint); lookupErr != nil || found {
+		return replay, lookupErr
+	}
+	return Message{}, err
 }
 
 func (u *UseCases) Get(ctx context.Context, accountID, messageID string) (Message, error) {
@@ -116,6 +134,13 @@ func (u *UseCases) Retry(ctx context.Context, accountID, messageID, idempotencyK
 	if accountID == "" || messageID == "" || idempotencyKey == "" {
 		return Message{}, domain.ErrInvalidArgument
 	}
+	fingerprint, err := retryRequestFingerprint(messageID)
+	if err != nil {
+		return Message{}, err
+	}
+	if result, found, err := u.idempotencyResult(ctx, accountID, IdempotencyOperationRetryMessage, idempotencyKey, fingerprint); err != nil || found {
+		return result, err
+	}
 	message, err := u.repository.GetMessage(ctx, accountID, messageID)
 	if err != nil {
 		return Message{}, err
@@ -134,12 +159,58 @@ func (u *UseCases) Retry(ctx context.Context, accountID, messageID, idempotencyK
 		Status:        AttemptStatusQueued,
 		CreatedAt:     u.now().UTC(),
 	}
-	return u.repository.CreateRetry(ctx, CreateRetryRecord{
-		AccountID:      accountID,
-		MessageID:      messageID,
-		Attempt:        attempt,
-		IdempotencyKey: idempotencyKey,
+	result, err := u.repository.CreateRetry(ctx, CreateRetryRecord{
+		AccountID:          accountID,
+		MessageID:          messageID,
+		Attempt:            attempt,
+		IdempotencyKey:     idempotencyKey,
+		RequestFingerprint: fingerprint,
 	})
+	if !errors.Is(err, domain.ErrConflict) {
+		return result, err
+	}
+	if replay, found, lookupErr := u.idempotencyResult(ctx, accountID, IdempotencyOperationRetryMessage, idempotencyKey, fingerprint); lookupErr != nil || found {
+		return replay, lookupErr
+	}
+	return Message{}, err
+}
+
+func (u *UseCases) idempotencyResult(ctx context.Context, accountID string, operation IdempotencyOperation, key, fingerprint string) (Message, bool, error) {
+	result, found, err := u.repository.GetIdempotencyResult(ctx, accountID, operation, key)
+	if err != nil || !found {
+		return Message{}, false, err
+	}
+	if result.RequestFingerprint != fingerprint {
+		return Message{}, true, domain.ErrConflict
+	}
+	return result.Message, true, nil
+}
+
+func createRequestFingerprint(input CreateInput) (string, error) {
+	return requestFingerprint(struct {
+		Channel        Channel  `json:"channel"`
+		DestinationRef string   `json:"destination_ref"`
+		TurnIDs        []string `json:"turn_ids"`
+	}{
+		Channel:        input.Channel,
+		DestinationRef: input.DestinationRef,
+		TurnIDs:        input.TurnIDs,
+	})
+}
+
+func retryRequestFingerprint(messageID string) (string, error) {
+	return requestFingerprint(struct {
+		MessageID string `json:"message_id"`
+	}{MessageID: messageID})
+}
+
+func requestFingerprint(request any) (string, error) {
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func (u *UseCases) Preferences(ctx context.Context, accountID string) ([]Preference, error) {

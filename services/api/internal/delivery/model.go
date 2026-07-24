@@ -144,3 +144,12 @@ type Preference struct {
 	Verified  bool      `json:"verified"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// UpdatePreferenceRecord intentionally excludes Verified because channel
+// verification is authoritative state and cannot be changed by this command.
+type UpdatePreferenceRecord struct {
+	AccountID string
+	Channel   Channel
+	Enabled   bool
+	UpdatedAt time.Time
+}

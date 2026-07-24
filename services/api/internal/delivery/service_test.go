@@ -30,7 +30,8 @@ type deliveryRepositoryFake struct {
 	completionErr       error
 	preferences         []Preference
 	preferenceListCalls int
-	putPreference       Preference
+	preferenceUpdate    UpdatePreferenceRecord
+	preferenceResult    Preference
 }
 
 func (f *deliveryRepositoryFake) CreateMessage(_ context.Context, record CreateMessageRecord) (Message, error) {
@@ -69,9 +70,17 @@ func (f *deliveryRepositoryFake) ListPreferences(context.Context, string) ([]Pre
 	f.preferenceListCalls++
 	return f.preferences, nil
 }
-func (f *deliveryRepositoryFake) PutPreference(_ context.Context, preference Preference) (Preference, error) {
-	f.putPreference = preference
-	return preference, nil
+func (f *deliveryRepositoryFake) PutPreference(_ context.Context, update UpdatePreferenceRecord) (Preference, error) {
+	f.preferenceUpdate = update
+	if f.preferenceResult.AccountID != "" {
+		return f.preferenceResult, nil
+	}
+	return Preference{
+		AccountID: update.AccountID,
+		Channel:   update.Channel,
+		Enabled:   update.Enabled,
+		UpdatedAt: update.UpdatedAt,
+	}, nil
 }
 
 type turnReaderFake struct {
@@ -308,6 +317,31 @@ func TestCreateRejectsDisabledOrUnverifiedChannel(t *testing.T) {
 				t.Fatalf("Create() error = %v, want forbidden", err)
 			}
 		})
+	}
+}
+
+func TestPutPreferencePreservesAuthoritativeVerificationState(t *testing.T) {
+	wantTime := time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC)
+	repository := &deliveryRepositoryFake{
+		preferenceResult: Preference{
+			AccountID: "account-1",
+			Channel:   ChannelEmail,
+			Enabled:   false,
+			Verified:  true,
+			UpdatedAt: wantTime,
+		},
+	}
+	service := configuredDeliveryService(repository, turnReaderFake{}, destinationReaderFake{})
+
+	got, err := service.PutPreference(context.Background(), "account-1", ChannelEmail, false)
+	if err != nil {
+		t.Fatalf("PutPreference() error = %v", err)
+	}
+	if !got.Verified {
+		t.Fatal("PutPreference() cleared verified state")
+	}
+	if repository.preferenceUpdate.AccountID != "account-1" || repository.preferenceUpdate.Channel != ChannelEmail || repository.preferenceUpdate.Enabled || !repository.preferenceUpdate.UpdatedAt.Equal(wantTime) {
+		t.Fatalf("preference update = %#v", repository.preferenceUpdate)
 	}
 }
 

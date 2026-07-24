@@ -29,7 +29,9 @@ type Repository interface {
 	// creates the next attempt plus its outbox record.
 	CompleteAttempt(context.Context, AttemptCompletion) error
 	ListPreferences(context.Context, string) ([]Preference, error)
-	PutPreference(context.Context, Preference) (Preference, error)
+	// PutPreference updates only user-controlled fields and returns the complete
+	// preference, including the unchanged authoritative verification state.
+	PutPreference(context.Context, UpdatePreferenceRecord) (Preference, error)
 }
 
 type TurnReader interface {

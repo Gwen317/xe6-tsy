@@ -230,7 +230,7 @@ func (u *UseCases) PutPreference(ctx context.Context, accountID string, channel 
 	if accountID == "" || channel != ChannelEmail {
 		return Preference{}, domain.ErrInvalidArgument
 	}
-	return u.repository.PutPreference(ctx, Preference{
+	return u.repository.PutPreference(ctx, UpdatePreferenceRecord{
 		AccountID: accountID,
 		Channel:   channel,
 		Enabled:   enabled,

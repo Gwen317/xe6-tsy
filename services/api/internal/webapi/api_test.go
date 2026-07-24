@@ -22,6 +22,18 @@ type deliveryFake struct {
 	retryIdempotency string
 }
 
+type tokenVerifierFake struct {
+	token     string
+	accountID string
+}
+
+func (f tokenVerifierFake) VerifyAccessToken(_ context.Context, token string) (string, error) {
+	if token != f.token {
+		return "", domain.ErrUnauthorized
+	}
+	return f.accountID, nil
+}
+
 func authenticate(request *http.Request) *http.Request {
 	request.Header.Set("Authorization", "Bearer access-token")
 	return request.WithContext(webapi.WithAccountID(request.Context(), "account-1"))
@@ -235,5 +247,63 @@ func TestClientSuppliedAccountIDIsNotTrusted(t *testing.T) {
 
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAuthenticationMiddlewareUsesVerifiedBearerAccount(t *testing.T) {
+	fake := &deliveryFake{}
+	handler := webapi.New(
+		accounts.NewUseCases(),
+		usage.NewUseCases(),
+		fake,
+		webapi.WithAccessTokenVerifier(tokenVerifierFake{token: "valid-token", accountID: "verified-account"}),
+	)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/outbound-messages", strings.NewReader(
+		`{"channel":"email","destination_ref":"verified-email","turn_ids":["turn-1"]}`,
+	))
+	request.Header.Set("Authorization", "Bearer valid-token")
+	request.Header.Set("X-Account-ID", "forged-account")
+	request.Header.Set("Idempotency-Key", "message-key")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	if fake.created.AccountID != "verified-account" {
+		t.Fatalf("account ID = %q, want verified-account", fake.created.AccountID)
+	}
+}
+
+func TestAuthenticationMiddlewareRejectsInvalidBearer(t *testing.T) {
+	handler := webapi.New(
+		accounts.NewUseCases(),
+		usage.NewUseCases(),
+		delivery.NewUseCases(),
+		webapi.WithAccessTokenVerifier(tokenVerifierFake{token: "valid-token", accountID: "account-1"}),
+	)
+
+	tests := []struct {
+		name          string
+		authorization string
+	}{
+		{name: "missing"},
+		{name: "wrong scheme", authorization: "Basic valid-token"},
+		{name: "invalid token", authorization: "Bearer invalid-token"},
+		{name: "extra token parts", authorization: "Bearer valid-token extra"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/account/me", nil)
+			request.Header.Set("Authorization", test.authorization)
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			if response.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+			}
+		})
 	}
 }

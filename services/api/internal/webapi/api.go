@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/accounts"
@@ -19,25 +20,54 @@ type API struct {
 	accounts accounts.Service
 	usage    usage.Service
 	delivery delivery.Service
+	verifier accounts.AccessTokenVerifier
 }
 
-func New(accountsService accounts.Service, usageService usage.Service, deliveryService delivery.Service) http.Handler {
+type Option func(*API)
+
+func WithAccessTokenVerifier(verifier accounts.AccessTokenVerifier) Option {
+	return func(api *API) { api.verifier = verifier }
+}
+
+func New(accountsService accounts.Service, usageService usage.Service, deliveryService delivery.Service, options ...Option) http.Handler {
 	a := &API{accounts: accountsService, usage: usageService, delivery: deliveryService}
+	for _, option := range options {
+		option(a)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/auth/anonymous", a.createAnonymous)
 	mux.HandleFunc("POST /api/v1/auth/verification-codes", a.createPhoneChallenge)
 	mux.HandleFunc("POST /api/v1/auth/phone/login", a.verifyPhone)
 	mux.HandleFunc("POST /api/v1/auth/token/refresh", a.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
-	mux.HandleFunc("GET /api/v1/account/me", a.me)
-	mux.HandleFunc("GET /api/v1/voice-sessions/{id}/usage", a.sessionUsage)
-	mux.HandleFunc("GET /api/v1/usage/summary", a.accountUsage)
-	mux.HandleFunc("POST /api/v1/outbound-messages", a.createMessage)
-	mux.HandleFunc("GET /api/v1/outbound-messages/{message_id}", a.getMessage)
-	mux.HandleFunc("POST /api/v1/outbound-deliveries/{message_id}/retry", a.retryMessage)
-	mux.HandleFunc("GET /api/v1/account/message-preferences", a.preferences)
-	mux.HandleFunc("PUT /api/v1/account/message-preferences/{channel}", a.putPreference)
+	mux.Handle("GET /api/v1/account/me", a.authenticated(http.HandlerFunc(a.me)))
+	mux.Handle("GET /api/v1/voice-sessions/{id}/usage", a.authenticated(http.HandlerFunc(a.sessionUsage)))
+	mux.Handle("GET /api/v1/usage/summary", a.authenticated(http.HandlerFunc(a.accountUsage)))
+	mux.Handle("POST /api/v1/outbound-messages", a.authenticated(http.HandlerFunc(a.createMessage)))
+	mux.Handle("GET /api/v1/outbound-messages/{message_id}", a.authenticated(http.HandlerFunc(a.getMessage)))
+	mux.Handle("POST /api/v1/outbound-deliveries/{message_id}/retry", a.authenticated(http.HandlerFunc(a.retryMessage)))
+	mux.Handle("GET /api/v1/account/message-preferences", a.authenticated(http.HandlerFunc(a.preferences)))
+	mux.Handle("PUT /api/v1/account/message-preferences/{channel}", a.authenticated(http.HandlerFunc(a.putPreference)))
 	return mux
+}
+
+func (a *API) authenticated(next http.Handler) http.Handler {
+	if a.verifier == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+		if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" || strings.Contains(token, " ") {
+			writeError(w, r, domain.ErrUnauthorized)
+			return
+		}
+		id, err := a.verifier.VerifyAccessToken(r.Context(), token)
+		if err != nil || id == "" {
+			writeError(w, r, domain.ErrUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(WithAccountID(r.Context(), id)))
+	})
 }
 
 type errorResponse struct {

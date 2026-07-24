@@ -23,6 +23,13 @@ type TokenIssuer interface {
 	HashRefreshToken(string) string
 }
 
+// AccessTokenVerifier validates a bearer token and returns its trusted account.
+// HTTP middleware is the only component that may turn this result into request
+// account context.
+type AccessTokenVerifier interface {
+	VerifyAccessToken(context.Context, string) (string, error)
+}
+
 type Service interface {
 	CreateAnonymous(context.Context) (AuthResult, error)
 	CreatePhoneChallenge(context.Context, string) (string, error)

@@ -22,9 +22,21 @@ func main() {
 		address = ":8080"
 	}
 
+	webOptions := make([]webapi.Option, 0, 1)
+	if secret := os.Getenv("JWT_SECRET"); secret != "" {
+		_, verifier, err := accounts.NewHMACTokenManager(secret, "lingow-api", 15*time.Minute)
+		if err != nil {
+			slog.Error("invalid JWT configuration", "error", err)
+			os.Exit(1)
+		}
+		webOptions = append(webOptions, webapi.WithAccessTokenVerifier(verifier))
+	} else {
+		slog.Warn("JWT_SECRET is unset; authenticated endpoints cannot derive account context from bearer tokens")
+	}
+
 	server := &http.Server{
 		Addr:              address,
-		Handler:           webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases()),
+		Handler:           webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), webOptions...),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

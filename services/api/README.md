@@ -51,13 +51,34 @@ services/api/
 WebRTC config、offer/answer 和 ICE candidate 由 `services/realtime-audio/webrtc`
 统一处理。部署时可以由 API Gateway 转发 `/realtime/v1`，但本服务不实现信令逻辑。
 
+## Container process modes
+
+The same binary can run as one combined local process or as separate deployed
+roles. Set `LINGOW_PROCESS` to `api` for HTTP only, `worker` for the delivery
+dispatcher and consumer, or `migrate` for the one-shot PostgreSQL migration
+job. Leaving it unset preserves the local combined API/worker behavior.
+
+The production image is built with `services/api/Dockerfile`; the dedicated
+application Compose file is `infra/member5-app.compose.yaml`.
+
 结束会话时，本服务先幂等调用 realtime 的 `Stop`。realtime 确认 Pipeline 和 WebRTC 连接已关闭后，
 本服务再把业务会话标记为 `ended`。调用失败时保持会话未结束并重试，不允许只改业务状态而遗留实时连接。
 
-账户、用量和消息投递当前为可编译契约骨架。受保护路由只接受经过
-`AccessTokenVerifier` 验证后写入 Context 的账户身份；具体 Token 签发和验证策略接入前
-默认拒绝请求。未接入数据库、验证码发送、Token 签发、队列或 Email Provider 的业务方法
-必须返回 `not_implemented`，不得伪造成功结果。
+账户、用量和消息投递已提供 PostgreSQL/Valkey 的最小可运行实现。受保护路由只接受经过
+`AccessTokenVerifier` 验证后写入 Context 的账户身份，客户端提供的 `X-Account-ID` 不参与
+鉴权。账户支持匿名创建、Bearer access token、refresh rotation 和 logout；用量按
+`idempotency_key` 幂等落库并提供账户/会话汇总；消息通过 final Turn 快照写入 PostgreSQL
+transactional outbox，再由 Valkey Stream worker 异步消费并记录发送状态和重试。
+
+部署时如果 `LINGOW_DELIVERY_PROVIDER=unconfigured`，worker 会将发送尝试标记为失败，
+不会伪造发送成功。真实邮件 Provider、目的地 provisioning，以及实时转译模块发布
+`usage.recorded` 的生产入口仍需由对应模块补齐。
+
+手机号验证码默认关闭（`LINGOW_SMS_PROVIDER=disabled`）。本地联调可设置
+`LINGOW_APP_ENV=development`、`LINGOW_SMS_PROVIDER=mock-webhook` 和
+`LINGOW_SMS_WEBHOOK_URL`，服务会向该地址发送 `POST {"phone","code"}`；这不是
+生产短信 Provider，生产环境会拒绝启用。持久化运行必须配置至少 32 字节且独立于
+`LINGOW_TOKEN_SECRET` 的 `LINGOW_AUTH_PEPPER`，用于 HMAC 保护手机号与验证码摘要。
 
 ## 语音记录存储集成测试
 

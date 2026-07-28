@@ -7,6 +7,33 @@ import (
 	"time"
 )
 
+func TestDeliveryAttemptOutboxContainsRequiredEnvelope(t *testing.T) {
+	attempt := DeliveryAttempt{ID: "attempt-1", MessageID: "message-1"}
+	topic, eventKey, payload, err := buildDeliveryAttemptOutbox(attempt, "create-1")
+	if err != nil {
+		t.Fatalf("buildDeliveryAttemptOutbox() error = %v", err)
+	}
+	if topic != deliveryAttemptTopic {
+		t.Fatalf("topic = %q, want %q", topic, deliveryAttemptTopic)
+	}
+	if eventKey != attempt.ID {
+		t.Fatalf("event key = %q, want %q", eventKey, attempt.ID)
+	}
+	var envelope map[string]string
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatalf("payload is not JSON object: %v", err)
+	}
+	for field, want := range map[string]string{
+		"attempt_id":      attempt.ID,
+		"message_id":      attempt.MessageID,
+		"idempotency_key": "create-1",
+	} {
+		if envelope[field] != want {
+			t.Errorf("payload[%q] = %q, want %q", field, envelope[field], want)
+		}
+	}
+}
+
 func TestFinalTurnSnapshotMatchesTurnsReadBoundary(t *testing.T) {
 	snapshot := FinalTurnSnapshot{
 		TurnID:                "turn-1",

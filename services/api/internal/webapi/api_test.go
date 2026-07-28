@@ -22,6 +22,18 @@ type deliveryFake struct {
 	retryIdempotency string
 }
 
+type weComConfigurerFake struct {
+	accountID string
+	reference string
+	webhook   string
+	err       error
+}
+
+func (f *weComConfigurerFake) ConfigureWeComBot(_ context.Context, accountID, reference, webhook string) error {
+	f.accountID, f.reference, f.webhook = accountID, reference, webhook
+	return f.err
+}
+
 type tokenVerifierFake struct{}
 
 func (tokenVerifierFake) VerifyAccessToken(_ context.Context, token string) (accounts.AccessTokenClaims, error) {
@@ -35,12 +47,16 @@ type accountFake struct {
 	verifyPhoneCalled bool
 	verifyPhoneCtx    context.Context
 	verifyPhoneAnon   string
+	challengeErr      error
 }
 
 func (f *accountFake) CreateAnonymous(context.Context) (accounts.AuthResult, error) {
 	return accounts.AuthResult{}, domain.ErrNotImplemented
 }
 func (f *accountFake) CreatePhoneChallenge(context.Context, string) (string, error) {
+	if f.challengeErr != nil {
+		return "", f.challengeErr
+	}
 	return "", domain.ErrNotImplemented
 }
 func (f *accountFake) VerifyPhone(ctx context.Context, _, _, anonymousAccountID string) (accounts.AuthResult, error) {
@@ -100,6 +116,22 @@ func TestCreateMessagePassesAuthenticatedAccount(t *testing.T) {
 	}
 	if fake.created.AccountID != "account-1" || fake.created.IdempotencyKey != "create-message-1" || len(fake.created.TurnIDs) != 1 {
 		t.Fatalf("unexpected input: %#v", fake.created)
+	}
+}
+
+func TestConfigureWeComBotUsesAuthenticatedAccount(t *testing.T) {
+	configurer := &weComConfigurerFake{}
+	handler := webapi.New(accounts.NewUseCases(), usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{}, configurer)
+	request := authenticate(httptest.NewRequest(http.MethodPut, "/api/v1/account/wecom-bots/team-alerts", strings.NewReader(`{"webhook_url":"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret"}`)))
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusNoContent, response.Body.String())
+	}
+	if configurer.accountID != "account-1" || configurer.reference != "team-alerts" || configurer.webhook == "" {
+		t.Fatalf("unexpected configuration call: %#v", configurer)
 	}
 }
 
@@ -367,5 +399,22 @@ func TestPhoneLoginWithoutAnonymousBindingRemainsPublic(t *testing.T) {
 	}
 	if !fake.verifyPhoneCalled {
 		t.Fatal("public phone login did not reach account service")
+	}
+}
+
+func TestRateLimitedPhoneChallengeMapsToRetryable429(t *testing.T) {
+	fake := &accountFake{challengeErr: domain.ErrRateLimited}
+	handler := webapi.New(fake, usage.NewUseCases(), delivery.NewUseCases(), tokenVerifierFake{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/verification-codes", strings.NewReader(`{"phone":"+8613800000000"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusTooManyRequests, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"code":"rate_limited"`) || !strings.Contains(response.Body.String(), `"retryable":true`) {
+		t.Fatalf("unexpected rate-limit response: %s", response.Body.String())
 	}
 }

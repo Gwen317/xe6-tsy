@@ -23,13 +23,17 @@ type API struct {
 	usage    usage.Service
 	delivery delivery.Service
 	tokens   accounts.AccessTokenVerifier
+	wecom    delivery.WeComBotDestinationConfigurer
 }
 
 // New builds the account/usage/delivery HTTP mux. Callers may register
 // additional module routes on the returned ServeMux before serving. Protected
 // routes fail closed unless the required token verifier establishes an account.
-func New(accountsService accounts.Service, usageService usage.Service, deliveryService delivery.Service, tokens accounts.AccessTokenVerifier) *http.ServeMux {
+func New(accountsService accounts.Service, usageService usage.Service, deliveryService delivery.Service, tokens accounts.AccessTokenVerifier, wecomConfigurers ...delivery.WeComBotDestinationConfigurer) *http.ServeMux {
 	a := &API{accounts: accountsService, usage: usageService, delivery: deliveryService, tokens: tokens}
+	if len(wecomConfigurers) > 0 {
+		a.wecom = wecomConfigurers[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/auth/anonymous", a.createAnonymous)
 	mux.HandleFunc("POST /api/v1/auth/verification-codes", a.createPhoneChallenge)
@@ -44,6 +48,7 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	mux.Handle("POST /api/v1/outbound-deliveries/{message_id}/retry", a.authenticate(http.HandlerFunc(a.retryMessage)))
 	mux.Handle("GET /api/v1/account/message-preferences", a.authenticate(http.HandlerFunc(a.preferences)))
 	mux.Handle("PUT /api/v1/account/message-preferences/{channel}", a.authenticate(http.HandlerFunc(a.putPreference)))
+	mux.Handle("PUT /api/v1/account/wecom-bots/{destination_ref}", a.authenticate(http.HandlerFunc(a.configureWeComBot)))
 	return mux
 }
 
@@ -109,6 +114,7 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 // writeError maps stable domain errors to the shared HTTP error contract.
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code := http.StatusInternalServerError, "internal_error"
+	retryable := false
 	switch {
 	case errors.Is(err, domain.ErrNotImplemented):
 		status, code = http.StatusNotImplemented, "not_implemented"
@@ -122,11 +128,14 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		status, code = http.StatusNotFound, "not_found"
 	case errors.Is(err, domain.ErrConflict):
 		status, code = http.StatusConflict, "conflict"
+	case errors.Is(err, domain.ErrRateLimited):
+		status, code, retryable = http.StatusTooManyRequests, "rate_limited", true
 	}
 	var response errorResponse
 	response.Error.Code = code
 	response.Error.Message = code
 	response.Error.RequestID = requestID(r)
+	response.Error.Retryable = retryable
 	response.Error.Details = map[string]any{}
 	writeJSON(w, status, response)
 }
@@ -308,7 +317,7 @@ func (a *API) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input delivery.CreateInput
-	if decodeJSON(r, &input) != nil || input.Channel != delivery.ChannelEmail || input.DestinationRef == "" || len(input.TurnIDs) == 0 || r.Header.Get("Idempotency-Key") == "" || hasDuplicates(input.TurnIDs) {
+	if decodeJSON(r, &input) != nil || !delivery.IsSupportedChannel(input.Channel) || input.DestinationRef == "" || len(input.TurnIDs) == 0 || r.Header.Get("Idempotency-Key") == "" || hasDuplicates(input.TurnIDs) {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}
@@ -375,7 +384,7 @@ func (a *API) putPreference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	channel := delivery.Channel(r.PathValue("channel"))
-	if channel != delivery.ChannelEmail {
+	if !delivery.IsSupportedChannel(channel) {
 		writeError(w, r, domain.ErrInvalidArgument)
 		return
 	}
@@ -392,6 +401,30 @@ func (a *API) putPreference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (a *API) configureWeComBot(w http.ResponseWriter, r *http.Request) {
+	accountID, err := accountID(r)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if a.wecom == nil {
+		writeError(w, r, domain.ErrNotImplemented)
+		return
+	}
+	var request struct {
+		WebhookURL string `json:"webhook_url"`
+	}
+	if decodeJSON(r, &request) != nil || request.WebhookURL == "" {
+		writeError(w, r, domain.ErrInvalidArgument)
+		return
+	}
+	if err := a.wecom.ConfigureWeComBot(r.Context(), accountID, r.PathValue("destination_ref"), request.WebhookURL); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // hasDuplicates also rejects empty identifiers so Turn selection stays unambiguous.

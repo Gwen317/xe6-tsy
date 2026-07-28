@@ -50,3 +50,20 @@ func TestRecordInputUsesUsageFactContractFields(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionSummaryOmitsAccountPeriodBounds(t *testing.T) {
+	payload, err := json.Marshal(Summary{
+		AccountID: "account-1",
+		SessionID: "session-1",
+		Totals:    []StageTotal{},
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	encoded := string(payload)
+	for _, field := range []string{`"period_start"`, `"period_end"`} {
+		if strings.Contains(encoded, field) {
+			t.Fatalf("payload %s contains session-only field %s", encoded, field)
+		}
+	}
+}

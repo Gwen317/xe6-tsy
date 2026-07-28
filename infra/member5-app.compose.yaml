@@ -1,0 +1,93 @@
+name: lingow-member5-app
+
+# This file is intentionally separate from the dependency Compose project
+# already running on the server. The external network is the only connection to
+# the existing PostgreSQL and Valkey containers; those services are never
+# recreated by this file.
+
+x-lingow-image: &lingow-image
+  image: ${LINGOW_API_IMAGE:-lingow-member5-api:local}
+  build:
+    context: ${LINGOW_SOURCE_DIR:-../source}
+    dockerfile: ${LINGOW_DOCKERFILE:-services/api/Dockerfile}
+    args:
+      GOPROXY: ${LINGOW_GOPROXY:-https://proxy.golang.org,direct}
+
+x-lingow-database-env: &lingow-database-env
+  DATABASE_URL: "postgresql://${POSTGRES_USER:?POSTGRES_USER must be set}:${POSTGRES_PASSWORD_URLENCODED:?POSTGRES_PASSWORD_URLENCODED must be set}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB must be set}?sslmode=disable"
+
+x-lingow-runtime-env: &lingow-runtime-env
+  <<: *lingow-database-env
+  VALKEY_URL: "redis://:${VALKEY_PASSWORD_URLENCODED:?VALKEY_PASSWORD_URLENCODED must be set}@valkey:6379/0"
+  LINGOW_TOKEN_SECRET: "${LINGOW_TOKEN_SECRET:?LINGOW_TOKEN_SECRET must be set}"
+  LINGOW_AUTH_PEPPER: "${LINGOW_AUTH_PEPPER:?LINGOW_AUTH_PEPPER must be set}"
+  LINGOW_TOKEN_ISSUER: "${LINGOW_TOKEN_ISSUER:-lingow-api}"
+  LINGOW_TOKEN_AUDIENCE: "${LINGOW_TOKEN_AUDIENCE:-lingow-client}"
+  LINGOW_APP_ENV: "${LINGOW_APP_ENV:-production}"
+  LINGOW_SMS_PROVIDER: "${LINGOW_SMS_PROVIDER:-disabled}"
+  LINGOW_SMS_WEBHOOK_URL: "${LINGOW_SMS_WEBHOOK_URL:-}"
+  LINGOW_DESTINATION_KEY: "${LINGOW_DESTINATION_KEY:?LINGOW_DESTINATION_KEY must be set}"
+  LINGOW_DELIVERY_STREAM: "${LINGOW_DELIVERY_STREAM:-lingow:delivery}"
+  LINGOW_DELIVERY_GROUP: "${LINGOW_DELIVERY_GROUP:-delivery}"
+  LINGOW_DELIVERY_PROVIDER: "${LINGOW_DELIVERY_PROVIDER:-unconfigured}"
+
+x-lingow-service: &lingow-service
+  <<: *lingow-image
+  init: true
+  networks:
+    - lingow_member5_net
+  stop_grace_period: 20s
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
+services:
+  # Run this job once after the dependency stack is healthy. The API also keeps
+  # its idempotent startup migration for rollback and recovery scenarios.
+  migrate:
+    <<: *lingow-service
+    restart: "no"
+    environment:
+      <<: *lingow-database-env
+      LINGOW_PROCESS: migrate
+
+  api:
+    <<: *lingow-service
+    restart: unless-stopped
+    environment:
+      <<: *lingow-runtime-env
+      API_ADDR: ":8080"
+      LINGOW_PROCESS: api
+      LINGOW_DELIVERY_CONSUMER: "${LINGOW_API_CONSUMER:-api}"
+    ports:
+      - "${LINGOW_API_PORT:-10080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  worker:
+    <<: *lingow-service
+    restart: unless-stopped
+    environment:
+      <<: *lingow-runtime-env
+      LINGOW_PROCESS: worker
+      LINGOW_DELIVERY_CONSUMER: "${LINGOW_WORKER_CONSUMER:-worker-1}"
+    healthcheck:
+      # The worker has no HTTP listener. This check only verifies that its
+      # signal-aware PID 1 is still alive; queue/database readiness is checked
+      # by the process during startup and logged as a container failure.
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+networks:
+  lingow_member5_net:
+    external: true
+    name: lingow_member5_net

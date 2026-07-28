@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.*
+*.env
+**/*.env
+!**/.env.example
+.DS_Store
+**/node_modules
+**/dist
+**/build
+**/*.test
+**/*.out
+server-info
+tmp

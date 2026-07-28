@@ -49,6 +49,7 @@ func TestUsageFactValidatesUsageRecordedV1Contract(t *testing.T) {
 		{name: "trace id", mutate: func(fact *UsageFact) { fact.TraceID = "" }},
 		{name: "idempotency key", mutate: func(fact *UsageFact) { fact.IdempotencyKey = "" }},
 		{name: "long idempotency key", mutate: func(fact *UsageFact) { fact.IdempotencyKey = strings.Repeat("x", 201) }},
+		{name: "unicode idempotency key over rune limit", mutate: func(fact *UsageFact) { fact.IdempotencyKey = strings.Repeat("界", 201) }},
 		{name: "account id", mutate: func(fact *UsageFact) { fact.AccountID = "" }},
 		{name: "session id", mutate: func(fact *UsageFact) { fact.SessionID = "" }},
 		{name: "turn id", mutate: func(fact *UsageFact) { fact.TurnID = "" }},
@@ -59,6 +60,10 @@ func TestUsageFactValidatesUsageRecordedV1Contract(t *testing.T) {
 		{name: "output tokens", mutate: func(fact *UsageFact) { fact.OutputTokens = -1 }},
 		{name: "audio duration", mutate: func(fact *UsageFact) { fact.AudioDurationMS = -1 }},
 		{name: "cost amount", mutate: func(fact *UsageFact) { fact.CostAmount = "-1" }},
+		{name: "cost without currency", mutate: func(fact *UsageFact) { fact.CostAmount = "1" }},
+		{name: "currency without cost", mutate: func(fact *UsageFact) { fact.Currency = "CNY" }},
+		{name: "cost exceeds scale", mutate: func(fact *UsageFact) { fact.CostAmount, fact.Currency = "0.000000001", "CNY" }},
+		{name: "cost exceeds integer precision", mutate: func(fact *UsageFact) { fact.CostAmount, fact.Currency = "1234567890123", "CNY" }},
 		{name: "currency", mutate: func(fact *UsageFact) { fact.Currency = "usd" }},
 		{name: "occurred at", mutate: func(fact *UsageFact) { fact.OccurredAt = time.Time{} }},
 	}

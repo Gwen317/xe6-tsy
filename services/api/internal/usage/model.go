@@ -59,7 +59,7 @@ type StageTotal struct {
 type Summary struct {
 	AccountID   string       `json:"account_id"`
 	SessionID   string       `json:"session_id,omitempty"`
-	PeriodStart time.Time    `json:"period_start"`
-	PeriodEnd   time.Time    `json:"period_end"`
+	PeriodStart time.Time    `json:"period_start,omitempty,omitzero"`
+	PeriodEnd   time.Time    `json:"period_end,omitempty,omitzero"`
 	Totals      []StageTotal `json:"totals"`
 }

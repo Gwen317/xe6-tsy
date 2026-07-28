@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	recordsv1 "github.com/1024XEngineer/xe6-tsy/packages/contracts/records/v1"
 )
@@ -18,8 +20,14 @@ const UsageEventVersion = 1
 var (
 	// ErrInvalidUsageFact indicates that a usage.recorded payload violates its v1 contract.
 	ErrInvalidUsageFact  = errors.New("invalid usage fact")
-	usageCostPattern     = regexp.MustCompile(`^(?:|(?:0|[1-9][0-9]*)(?:\.[0-9]+)?)$`)
-	usageCurrencyPattern = regexp.MustCompile(`^(?:|[A-Z]{3})$`)
+	usageCostPattern     = regexp.MustCompile(`^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$`)
+	usageCurrencyPattern = regexp.MustCompile(`^[A-Z]{3}$`)
+)
+
+const (
+	maxUsageIdempotencyKeyLength = 200
+	usageCostScale               = 8
+	usageCostIntegerDigits       = 12
 )
 
 // UsageFact is the v1 usage event sent to member 5.
@@ -51,7 +59,7 @@ func (fact UsageFact) Validate() error {
 		return invalidUsageField("id")
 	case fact.TraceID == "":
 		return invalidUsageField("trace_id")
-	case fact.IdempotencyKey == "" || len(fact.IdempotencyKey) > 200:
+	case fact.IdempotencyKey == "" || !utf8.ValidString(fact.IdempotencyKey) || utf8.RuneCountInString(fact.IdempotencyKey) > maxUsageIdempotencyKeyLength:
 		return invalidUsageField("idempotency_key")
 	case fact.AccountID == "":
 		return invalidUsageField("account_id")
@@ -69,12 +77,28 @@ func (fact UsageFact) Validate() error {
 		return invalidUsageField("output_tokens")
 	case fact.AudioDurationMS < 0:
 		return invalidUsageField("audio_duration_ms")
-	case !usageCostPattern.MatchString(fact.CostAmount):
-		return invalidUsageField("cost_amount")
-	case !usageCurrencyPattern.MatchString(fact.Currency):
-		return invalidUsageField("currency")
 	case fact.OccurredAt.IsZero():
 		return invalidUsageField("occurred_at")
+	}
+
+	// Pricing is either completely unavailable or represented as a bounded
+	// PostgreSQL NUMERIC(20,8) amount paired with an ISO currency. Keeping this
+	// invariant at the publisher prevents an event from entering an outbox that
+	// the usage consumer must reject later.
+	if (fact.CostAmount == "") != (fact.Currency == "") {
+		return invalidUsageField("cost_amount/currency")
+	}
+	if fact.CostAmount != "" {
+		if !usageCostPattern.MatchString(fact.CostAmount) {
+			return invalidUsageField("cost_amount")
+		}
+		parts := strings.SplitN(fact.CostAmount, ".", 2)
+		if len(parts[0]) > usageCostIntegerDigits || (len(parts) == 2 && len(parts[1]) > usageCostScale) {
+			return invalidUsageField("cost_amount")
+		}
+	}
+	if fact.Currency != "" && !usageCurrencyPattern.MatchString(fact.Currency) {
+		return invalidUsageField("currency")
 	}
 
 	switch fact.ServiceType {

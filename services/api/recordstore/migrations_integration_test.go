@@ -27,11 +27,14 @@ func TestMigrateRecordsSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppliedMigrations() error = %v", err)
 	}
-	if len(statuses) != 1 {
-		t.Fatalf("len(AppliedMigrations()) = %d, want 1", len(statuses))
+	if len(statuses) != 2 {
+		t.Fatalf("len(AppliedMigrations()) = %d, want 2", len(statuses))
 	}
 	if status := statuses[0]; status.Version != 1 || status.Name != "voice_records" || status.AppliedAt.IsZero() {
 		t.Fatalf("AppliedMigrations()[0] = %#v, want applied voice_records version 1", status)
+	}
+	if status := statuses[1]; status.Version != 2 || status.Name != "member5_control_plane" || status.AppliedAt.IsZero() {
+		t.Fatalf("AppliedMigrations()[1] = %#v, want applied member5_control_plane version 2", status)
 	}
 }
 

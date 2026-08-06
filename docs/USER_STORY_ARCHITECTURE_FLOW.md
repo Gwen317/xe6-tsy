@@ -8,7 +8,7 @@
 
 ## 2. 核心用户故事
 
-用户打开 Web 或 Mobile，选择一组双语语言，开始一场对话；用户说完一句话后，系统完成识别、翻译和语音播放，保存最终转译记录和用量；用户结束会话后，系统确认实时资源已经停止，再结束业务会话。
+用户打开 Web 或 Mobile，先完成匿名认证或手机号验证码登录，获得访问凭证；随后选择一组双语语言并创建一场对话。用户说完一句话后，系统完成识别和翻译，并在启用 TTS 下行时播放译文，同时保存最终转译记录和用量；用户结束会话后，系统确认实时资源已经停止，再结束业务会话。
 
 ```mermaid
 sequenceDiagram
@@ -20,7 +20,8 @@ sequenceDiagram
     participant D as moduleD 记录与用量
 
     User->>Client: 开始对话
-    Client->>A: 认证并创建 Session
+    Client->>A: 登录并获取 Access Token
+    Client->>A: 使用 Access Token 创建 Session
     A-->>B: OutputA 会话身份
     B-->>C: OutputB 配置与接入授权
     Client->>C: 建立连接并发送音频
@@ -32,11 +33,13 @@ sequenceDiagram
 
 这张图只用于建立全局方向，不展开 WebRTC、VAD、可靠事件和停止确认等细节。下面每个模块都有一张局部时序图：当前模块会展开关键判断和处理步骤，其他模块只作为上游输入或下游接收方出现。讲解时先用总览图说明主线，再逐张放大局部链路，避免听众同时理解所有细节。
 
+图中的模块箭头表示业务上的逻辑交接，不表示四个模块之间一定存在同步 RPC，也不表示它们分别独立部署。实际交接可能经过 DataChannel、数据库 Outbox 或消息流；部署边界仍以 `services/api`、`services/realtime-audio` 和 `packages/contracts` 的实际实现为准。
+
 ## 3. 模块输入输出链路
 
 ### 3.1 moduleA：账户与会话模块
 
-这张图只展开认证和创建业务会话；后续三个模块合并为一个概略接收方：
+这张图展开“登录取得凭证”和“创建业务会话”两个连续动作；后续三个模块合并为一个概略接收方。登录是创建 Session 的前置条件，Session 接口只接收登录后携带的 Bearer Token。
 
 ```mermaid
 sequenceDiagram
@@ -48,7 +51,10 @@ sequenceDiagram
     User->>Client: 点击开始对话
     rect rgba(36, 150, 125, 0.16)
         Note over A: 当前展开 moduleA
-        Client->>A: Bearer Token 和 CreateSession
+        Client->>A: 登录请求：匿名创建或手机号验证码登录
+        A->>A: 创建/确认 Account 并签发 Access Token、Refresh Token
+        A-->>Client: AuthResult
+        Client->>A: POST /api/v1/voice-sessions + Bearer Token
         A->>A: 校验 Token 并取得 account_id
         A->>A: 创建 Session 并保存 created 状态
         A-->>Client: session_id 和 session_status
@@ -86,6 +92,13 @@ moduleA = AccountSessionModule {
 
 关键代码边界：
 
+- [services/api/internal/webapi/api.go#L33-L41](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/internal/webapi/api.go#L33-L41)：注册匿名创建、验证码申请、手机号登录、Token 刷新和退出接口；
+- [services/api/internal/webapi/api.go#L175-L237](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/internal/webapi/api.go#L175-L237)：登录相关 HTTP Handler，负责请求解析、可选匿名账户归属校验和响应映射；
+- [services/api/internal/accounts/service.go#L57-L168](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/internal/accounts/service.go#L57-L168)：账户与手机号验证码登录的业务编排，包括匿名账户创建、验证码挑战、手机号验证和账户合并；
+- [services/api/internal/accounts/model.go#L52-L64](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/internal/accounts/model.go#L52-L64)：`AuthResult`、`Tokens` 和账户身份返回结构；
+- [packages/contracts/openapi.yaml#L8-L50](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/packages/contracts/openapi.yaml#L8-L50)：认证相关 HTTP 路径、请求和响应契约；
+- [services/api/sessions/http.go#L69-L85](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/sessions/http.go#L69-L85)：`POST /api/v1/voice-sessions` 等 Session 生命周期路由，统一挂在认证中间件之后；
+- [packages/contracts/openapi.yaml#L59-L80](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/packages/contracts/openapi.yaml#L59-L80)：创建 Session 的请求、响应和认证契约；
 - [services/api/sessions/service.go](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/sessions/service.go)：会话 Use Case 和依赖组合；
 - [services/api/sessions/ports.go](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/sessions/ports.go)：Repository、RealtimeLifecycle 等业务端口；
 - [services/api/sessions/model.go](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/sessions/model.go)：`VoiceSession`、`StartOperation` 和业务状态模型。
@@ -186,8 +199,8 @@ sequenceDiagram
             C->>C: 解码标准化并执行 VAD
         end
         C->>C: 句末切分并确认完整 Turn
-        C->>C: ASR final 到翻译再到 TTS
-        C-->>Client: 最终字幕 播放音频与状态事件
+        C->>C: ASR final 到翻译，再按配置进入 TTS
+        C-->>Client: 最终字幕，以及按下行模式产生的音频和状态事件
     end
     C-->>D: OutputC FinalTurn 和 UsageFact
 ```
@@ -275,7 +288,7 @@ moduleC = RealtimeTranslationModule {
 }
 ```
 
-`moduleC` 负责验证 ticket、建立 WebRTC、接收音频，并编排 `VAD -> ASR -> Translation -> TTS`。partial 结果只用于临时展示或上下文纠偏；只有 ASR final 才能触发翻译、TTS、FinalTurn 和正式用量记录。播放期间如果检测到新的语音输入，实时状态机负责停止当前播放并恢复听音。
+`moduleC` 负责验证 ticket、建立 WebRTC、接收音频，并编排 `VAD -> ASR -> Translation -> TTS`。ASR Provider 可以产生 partial 结果，但当前 Pipeline 不消费、不持久化，也不转发给客户端；未来如果需要实时字幕，可以在这一层增加独立的 partial 转发路径。只有 ASR final 才能触发翻译和 FinalTurn；翻译确认后是否执行 TTS、以及音频是否下行，由目标语言和 TTS 下行配置决定。播放期间如果检测到新的语音输入，实时状态机负责停止当前播放并恢复听音。
 
 关键代码边界：
 
@@ -373,7 +386,10 @@ moduleD = RecordAndUsageModule {
 - [services/realtime-audio/pipeline/postgres_outbox.go](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/realtime-audio/pipeline/postgres_outbox.go)：实时侧 Final Turn 可靠事件发件箱；
 - [services/api/recordstore/composition.go](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/recordstore/composition.go)：记录服务和 Final Turn consumer 的组合；
 - [services/api/turns/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/api/turns) 与 [services/api/participants/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/api/participants)：Final Turn、说话人归属和历史读取；
-- [services/api/internal/usage/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/api/internal/usage)：用量事实消费、幂等记录和汇总。
+- [services/api/internal/usage/consumer.go#L45-L94](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/internal/usage/consumer.go#L45-L94)：`Consumer.ProcessOnce`，从可靠消息流接收 `usage.recorded`，按错误类型选择 Ack、Nack 或重试；
+- [services/api/internal/usage/service.go#L44-L75](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/internal/usage/service.go#L44-L75)：`UseCases.Record`，校验事件、核对 Session 归属并调用幂等 Repository；
+- [services/api/internal/usage/postgres.go#L26-L65](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/internal/usage/postgres.go#L26-L65)：`PostgresRepository.Record`，使用 `idempotency_key + payload_hash` 防止重复计量和同键改写；
+- [services/api/internal/usage/postgres.go#L71-L121](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/internal/usage/postgres.go#L71-L121)：`PostgresRepository.summary`，按账户 lineage、Session 和半开时间区间聚合用量，并拒绝币种或价格不完整的模糊汇总。
 
 ### 3.5 结束会话：moduleA 与 moduleC 协作
 
@@ -468,7 +484,7 @@ services/api/internal/usage
  -> 获取 realtime ticket
  -> 建立 WebRTC
  -> 发送音频
- -> 获得 ASR final 和译文播放
+ -> 获得最终原文、译文和播放结果（播放是否发生取决于 TTS 下行配置）
  -> 保存并查询 Final Turn
  -> 记录用量
  -> 幂等结束会话
@@ -478,7 +494,7 @@ services/api/internal/usage
 
 ## 6. 结合时序图与伪代码的纯中文讲解稿
 
-下面这份稿子按“先讲用户故事和总览图，再逐张讲局部时序图，最后落到伪代码和关键实现”的顺序组织，正常语速约需八至十分钟。方括号中的内容是讲解提示，不需要念出来。
+下面这份稿子按“先讲用户故事和总览图，再逐张讲局部时序图，最后落到伪代码和关键实现”的顺序组织，正常语速约需十五至二十分钟。每讲一个模块，都固定回答三个问题：它负责什么、接收和交出什么、代码边界在哪里。方括号中的内容是讲解提示，不需要念出来；如果现场时间有限，可以优先保留每一节的“职责、交接和边界”三句话。
 
 ### 6.1 开场：先说明架构主线
 
@@ -486,7 +502,7 @@ services/api/internal/usage
 
 大家好，下面我结合一张总览时序图、五张局部时序图和后面的模块伪代码，介绍这个项目的一次完整实时对话是怎样在系统中流转的。
 
-我们先从一个最简单的用户故事开始。用户打开网页端或者移动端，选择中文和英文，然后开始说话。当用户说完一句话后，系统识别原文、完成翻译、播放译文，同时保存这一轮的最终记录和用量。最后，用户主动结束整场会话。
+我们先从一个最简单的用户故事开始。用户打开网页端或者移动端，先完成匿名认证或手机号验证码登录，再选择中文和英文并开始说话。当用户说完一句话后，系统识别原文、完成翻译，并在启用 TTS 下行时播放译文，同时保存这一轮的最终记录和用量。最后，用户主动结束整场会话。
 
 围绕这条用户故事，系统分成业务控制和实时处理两个部分。业务控制部分负责账户、业务会话、语言配置、最终记录、历史查询和用量；实时处理部分负责音频连接、说话检测、语音识别、翻译、语音合成、播放和打断。两边通过统一的数据约定进行交接。客户端只负责采集声音、播放声音、展示结果和响应用户操作，不负责判断后端业务状态。
 
@@ -496,11 +512,13 @@ services/api/internal/usage
 
 【切换到 moduleA 局部时序图，指向高亮区域中的认证和创建 Session】
 
-首先，用户在客户端点击开始对话。客户端携带访问凭证调用业务服务，完成身份认证并创建会话。这一段对应第一个模块，也就是账户与会话模块。
+首先，用户在客户端点击开始对话。客户端先调用 `POST /api/v1/auth/anonymous` 获取匿名账户凭证；如果用户走手机号登录，则先调用 `POST /api/v1/auth/verification-codes` 申请验证码，再调用 `POST /api/v1/auth/phone/login` 用 `challenge_id` 和验证码换取正式账户凭证。拿到 `Access Token` 后，客户端才携带 `Authorization: Bearer <token>` 调用 `POST /api/v1/voice-sessions` 创建 Session。这一段对应第一个模块，也就是账户与会话模块。
 
 这个模块的输入重点有两个：一个是能够证明用户身份的访问凭证，另一个是创建会话的请求。服务端验证凭证后，从认证结果中取得账户编号，而不是相信客户端自己填写的账户编号。随后，服务端创建全局唯一的会话编号，并把业务会话设置为已经创建、尚未开始实时处理的状态。
 
 所以，第一个模块的核心输出不是音频结果，而是一个已经完成账户归属校验的业务会话。后续的语言配置、实时接入、最终记录和历史查询，都会通过这个会话编号串联起来。
+
+对应到代码，登录入口在 `services/api/internal/webapi/api.go`，其中 `New` 注册路由，`createAnonymous`、`createPhoneChallenge`、`verifyPhone` 分别适配匿名创建、验证码申请和手机号登录；登录业务编排在 `services/api/internal/accounts/service.go`，返回结构在 `internal/accounts/model.go` 的 `AuthResult` 和 `Tokens`。创建 Session 之后，才进入 `services/api/sessions/service.go`；它的 `ports.go` 把数据库和实时生命周期依赖隔离出去，`model.go` 定义 `VoiceSession` 以及 `created -> active -> ended` 的业务状态约束。讲解时可以把这几处分别概括成“认证入口、认证业务、凭证模型、会话流程、依赖和状态”。
 
 从代码架构上看，这一部分内部又分为三层：用例层负责组织创建、开始和结束会话的业务流程；依赖接口层负责隔离数据库和实时服务；状态模型层负责约束会话能够怎样变化。这里体现的原则是，业务会话状态只能由业务服务维护，客户端和实时音频服务都不能自行修改。
 
@@ -516,7 +534,7 @@ services/api/internal/usage
 
 完成配置后，业务服务向客户端返回会话编号和短期实时接入凭证。这个凭证只能用于指定的会话，并且具有过期时间。它的作用是让实时音频服务确认当前连接已经得到业务服务授权，同时避免把长期账户凭证直接交给实时音频服务。
 
-从代码架构上看，这一部分由语言配置模块负责校验语言组合和管理版本，由实时接入模块负责签发短期凭证，再由公共契约层统一约束双方交接的数据含义。
+从代码架构上看，这一部分由 `services/api/languages/` 负责校验语言组合和管理版本，由 `services/api/realtimeaccess/` 负责签发短期凭证，再由 `packages/contracts/realtime/v1/` 统一约束 Start、Stop、ticket 和运行时状态的交接。这样讲可以明确：配置的事实来源在 API，实时服务只接收已经授权且版本明确的输入。
 
 ### 6.4 第三阶段：建立实时连接并处理一句话
 
@@ -528,11 +546,11 @@ services/api/internal/usage
 
 音频进入实时管线后，会依次经过说话检测、语音识别、翻译和语音合成。说话检测和句末切分负责判断用户是否正在说话，以及一句话在什么时候结束。当前本地实现是先根据连续静音时间或者最长说话时间切出完整语音片段，再把整段语音送给识别模块。
 
-所以，当前系统真正依赖的是最终识别结果。临时识别结果虽然可能由外部识别能力产生，但当前处理管线会忽略，也没有发送给客户端。当最终识别结果产生以后，系统才确认这一句话的原文，并继续触发翻译、最终记录、用量记录和语音合成。
+所以，当前系统真正依赖的是最终识别结果。临时识别结果虽然可能由外部识别能力产生，但当前处理管线会忽略，也没有发送给客户端。当最终识别结果产生以后，系统才确认这一句话的原文，并继续触发翻译、最终记录和用量记录；翻译确认后是否合成和下行语音，再由 TTS 配置决定。
 
 这里所说的一个话轮，就是经过句末确认的一句完整话语。系统会为它分配唯一编号，同时记录这一句话实际使用的语言配置版本，方便后续去重和追溯。
 
-从代码架构上看，这一部分分为连接适配层、音频预处理层、句末检测层、流程编排层和外部能力适配层。连接适配层只处理音频和实时消息；流程编排层只决定各处理步骤的先后顺序；外部能力适配层负责接入不同的识别、翻译和语音合成供应商。因此后续更换供应商时，不需要重写整条业务流程。
+从代码架构上看，这一部分分为连接适配层、音频预处理层、句末检测层、流程编排层和外部能力适配层。连接适配层对应 `controlplane/http.go` 和 `runtime/manager.go`，只处理控制面、媒体运行时和生命周期；`vad/`、`segment/` 负责音频帧和句末分段；`pipeline/` 只编排步骤先后；`asr/`、`translate/`、`tts/` 隔离不同供应商。因此后续更换供应商时，不需要重写整条业务流程。
 
 ### 6.5 第四阶段：区分客户端实时通知和后端可靠事实
 
@@ -562,7 +580,7 @@ services/api/internal/usage
 
 对于用量，系统使用唯一的去重标识，防止语音识别、翻译和语音合成的用量因为消息重试而被重复累计。客户端需要查看历史内容时，通过业务服务查询已经持久化的最终话轮。因此，实时通知用于保证即时体验，业务服务返回的持久化结果才是断线恢复和历史展示的权威来源。
 
-从代码架构上看，这一部分由公共契约层定义最终话轮的完整结构，由可靠事件表和后台消费任务负责交接，再由记录服务和用量服务分别完成幂等保存。
+从代码架构上看，这一部分由 `packages/contracts/records/v1/records.go` 定义最终话轮的完整结构，由 `services/realtime-audio/pipeline/postgres_outbox.go` 和 API 侧的 `recordstore/composition.go` 负责可靠交接，再由记录服务和用量服务分别完成保存。用量主链路可以直接定位到三个函数：`internal/usage/consumer.go` 的 `Consumer.ProcessOnce` 负责取消息并决定 Ack/Nack，`internal/usage/service.go` 的 `UseCases.Record` 负责校验和 Session 归属，`internal/usage/postgres.go` 的 `PostgresRepository.Record` 负责幂等落库；同文件的 `summary` 函数负责最终汇总。这样讲用量时可以沿着“消息消费 -> 业务校验 -> 幂等落库 -> 汇总查询”四步展开，而不需要把整个 usage 目录当成一个黑盒。
 
 ### 6.7 第六阶段：可靠结束整个会话
 
@@ -582,7 +600,7 @@ services/api/internal/usage
 
 总结一下，这套架构可以用一句话概括：业务服务负责“这场会话属于谁、配置是什么、最终留下什么”，实时音频服务负责“这一刻正在听什么、识别什么、翻译什么和播放什么”，客户端负责“采集、播放和展示”，公共契约层负责保证各个模块对数据含义的理解一致。
 
-沿着一次用户对话来看，完整链路就是：认证并创建会话，保存双语配置并取得短期接入凭证，建立实时音频连接，完成一句话的句末检测、识别、翻译和语音合成，把即时结果推送给客户端，把最终话轮和用量可靠交给后端，最后停止实时运行并结束业务会话。
+沿着一次用户对话来看，完整链路就是：认证并创建会话，保存双语配置并取得短期接入凭证，建立实时音频连接，完成一句话的句末检测、识别和翻译；如果下行配置启用，再完成语音合成和播放；同时把即时结果推送给客户端，把最终话轮和用量可靠交给后端，最后停止实时运行并结束业务会话。
 
 这套划分带来的价值有三个。第一，实时处理状态和长期业务状态不会互相混淆；第二，客户端的低延迟体验和后端的可靠保存可以分别保证；第三，识别、翻译、语音合成、存储和消息系统都通过明确边界接入，后续替换具体实现时不会破坏整条用户故事。
 
@@ -594,7 +612,7 @@ services/api/internal/usage
 | --- | --- | --- | --- |
 | `asr.partial` | ASR Provider 的临时识别结果；当前 Pipeline 忽略非 final 事件 | 否 | 否 |
 | `asr.final` | 触发翻译、Final Turn、用量记录和 TTS | 不作为独立事件发送 | 否；最终原文包含在 `translation.final` 中 |
-| `translation.final` | 配置数据库时可靠写入 Recordstore，同时形成客户端字幕 | 是，通过 DataChannel 尽力而为发送 | 是 |
+| `translation.final` | 启用数据库集成时可靠写入 Recordstore，同时形成客户端字幕 | 是，通过 DataChannel 尽力而为发送 | 是 |
 | `tts.audio` | PCM 下行模式下向浏览器发送 TTS 音频分片 | PCM 模式发送 | 是，由浏览器重组并播放 |
 | `playback.started` | Opus 下行模式下更新播放状态并表示音频开始 | Opus 模式发送 | 当前未显式消费 |
 | `playback.finished` | Opus 下行模式下结束播放状态 | Opus 模式发送 | 当前未显式消费 |

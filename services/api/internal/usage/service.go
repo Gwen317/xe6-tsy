@@ -44,13 +44,17 @@ func NewPersistentUseCases(repository Repository, owners SessionOwnerReader) *Us
 // Record 接收一条后端 usage.recorded 事实，校验契约和 Session 归属后执行幂等持久化。
 // 若匿名账户已经合并，只允许 canonical account 相同的事实继续写入，并保留 Session 创建时的原始 owner。
 func (u *UseCases) Record(ctx context.Context, input RecordInput) (Detail, error) {
+	// Repository 是生产持久化的必要依赖；未装配时必须 fail-closed，不能把内存结果伪装成已计量事实。
 	if u.repository == nil {
 		return Detail{}, domain.ErrNotImplemented
 	}
+	// 先校验事件版本、必填字段、阶段枚举和度量范围，再访问 Session 归属或数据库。
+	// 这样可以尽早拒绝无法通过契约修复的消息，减少无意义的数据库访问和重试。
 	if err := validate(input); err != nil {
 		return Detail{}, err
 	}
 	if u.owners != nil {
+		// Session 的账户归属是业务事实来源，不能以 usage.recorded 中的 account_id 直接作为授权依据。
 		owner, err := u.owners.AccountIDForSession(ctx, input.SessionID)
 		if err != nil {
 			return Detail{}, err
@@ -58,10 +62,12 @@ func (u *UseCases) Record(ctx context.Context, input RecordInput) (Detail, error
 		if err := u.sameCanonicalAccount(ctx, owner, input.AccountID); err != nil {
 			return Detail{}, err
 		}
-		// Session/account 复合外键保留 Session 创建时记录的不可变 owner。
-		// 账户合并后的调用经 canonical 比较可以通过，但落库仍使用原始 owner，保证历史事实稳定。
+		// 匿名账户登录后可能与正式账户合并：允许同一 canonical account 的事件通过，
+		// 但落库仍使用 Session 创建时的 owner，保证历史用量不会因账户合并而被改写。
 		input.AccountID = owner
 	}
+	// Repository.Record 以 idempotency_key + payload hash 实现“同事实重放成功、内容变化冲突”。
+	// 这里不根据 created 标记分支，因为重复消费与首次消费对上层都代表事实已可靠保存。
 	detail, _, err := u.repository.Record(ctx, input)
 	return detail, err
 }

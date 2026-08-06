@@ -12,20 +12,21 @@ import (
 
 const defaultUsageStreamBlock = 5 * time.Second
 
-// StreamMessage is one broker-delivered usage.recorded payload and its receipt.
+// StreamMessage 表示 Broker 交付的一条 usage.recorded 消息及其结算凭据。
 type StreamMessage struct {
-	Payload []byte
-	Receipt string
+	Payload []byte // 原始事件 JSON，业务层解析前不在 Stream 适配器中解释字段。
+	Receipt string // Redis Stream entry ID，用于 Ack 或保留待重试状态。
 }
 
-// StreamConsumer receives usage.recorded events and settles broker receipts.
+// StreamConsumer 抽象消息接收和结算，使 Consumer 不依赖 Redis/Valkey 客户端细节。
 type StreamConsumer interface {
 	Receive(context.Context) (StreamMessage, error)
 	Ack(context.Context, string) error
 	Nack(context.Context, string) error
 }
 
-// ValkeyUsageStream consumes usage.recorded events from a Redis/Valkey stream group.
+// ValkeyUsageStream 使用 Redis/Valkey consumer group 消费 usage.recorded。
+// 消息成功后 XACK；临时失败留在 pending list，空闲超过 claimIdle 后由任一健康消费者重新领取。
 type ValkeyUsageStream struct {
 	client    *redis.Client
 	stream    string
@@ -35,6 +36,8 @@ type ValkeyUsageStream struct {
 	claimIdle time.Duration
 }
 
+// NewValkeyUsageStream 创建或复用消费组，并为未显式配置的环境使用稳定默认名称。
+// BUSYGROUP 表示消费组已经存在，是幂等启动的正常情况而不是错误。
 func NewValkeyUsageStream(ctx context.Context, client *redis.Client, stream, group, consumer string) (*ValkeyUsageStream, error) {
 	if client == nil {
 		return nil, fmt.Errorf("valkey client is required")
@@ -62,7 +65,7 @@ func NewValkeyUsageStream(ctx context.Context, client *redis.Client, stream, gro
 	return queue, nil
 }
 
-// Publish enqueues one usage.recorded payload for tests and local publishers.
+// Publish 将一条 usage.recorded 放入 Stream，主要供测试和本地发布器使用。
 func (q *ValkeyUsageStream) Publish(ctx context.Context, payload []byte) error {
 	return q.client.XAdd(ctx, &redis.XAddArgs{
 		Stream: q.stream,
@@ -70,6 +73,8 @@ func (q *ValkeyUsageStream) Publish(ctx context.Context, payload []byte) error {
 	}).Err()
 }
 
+// Receive 优先重新领取超时 pending 消息，再阻塞读取从未交付的新消息。
+// 每次只返回一条，便于 Consumer 在下一次领取前完成明确的 Ack/Nack 决策。
 func (q *ValkeyUsageStream) Receive(ctx context.Context) (StreamMessage, error) {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -117,10 +122,11 @@ func (q *ValkeyUsageStream) Nack(ctx context.Context, receipt string) error {
 	if receipt == "" {
 		return nil
 	}
-	// Leave the entry in the consumer-group pending list so autoclaim can retry it.
+	// Redis Stream 没有独立 NACK 命令；不执行 XACK 即可把消息留在 pending list，等待 autoclaim 重试。
 	return nil
 }
 
+// autoclaim 领取超过 claimIdle 仍未确认的消息，用于消费者崩溃或临时错误后的恢复。
 func (q *ValkeyUsageStream) autoclaim(ctx context.Context) (StreamMessage, bool, error) {
 	result, _, err := q.client.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream:   q.stream,
@@ -138,6 +144,7 @@ func (q *ValkeyUsageStream) autoclaim(ctx context.Context) (StreamMessage, bool,
 	}
 	message, err := streamMessageFromEntry(result[0])
 	if err != nil {
+		// 缺少 payload 的损坏消息无法通过重试修复，直接 Ack 防止阻塞消费组。
 		_ = q.Ack(ctx, result[0].ID)
 		return StreamMessage{}, false, nil
 	}

@@ -18,7 +18,8 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/usage"
 )
 
-// API adapts versioned HTTP requests to account, usage, and delivery use cases.
+// API 将带版本的 HTTP 请求适配到账户、用量和消息投递用例。
+// 该层只负责协议解析、认证上下文和错误映射，不在 Handler 中实现登录或计费业务规则。
 type API struct {
 	accounts accounts.Service
 	usage    usage.Service
@@ -26,17 +27,19 @@ type API struct {
 	tokens   accounts.AccessTokenVerifier
 }
 
-// New builds the account/usage/delivery HTTP mux. Callers may register
-// additional module routes on the returned ServeMux before serving. Protected
-// routes fail closed unless the required token verifier establishes an account.
+// New 构造账户、用量和消息投递 HTTP 路由。
+// 返回的 ServeMux 允许主程序继续挂载 Session、语言和记录模块；所有受保护路由都必须先通过
+// AccessTokenVerifier 建立可信账户身份，verifier 缺失时安全返回未授权。
 func New(accountsService accounts.Service, usageService usage.Service, deliveryService delivery.Service, tokens accounts.AccessTokenVerifier) *http.ServeMux {
 	a := &API{accounts: accountsService, usage: usageService, delivery: deliveryService, tokens: tokens}
 	mux := http.NewServeMux()
+	// 登录公开入口：创建匿名身份、申请验证码、手机号登录、刷新和退出各自拥有独立契约。
 	mux.HandleFunc("POST /api/v1/auth/anonymous", a.createAnonymous)
 	mux.HandleFunc("POST /api/v1/auth/verification-codes", a.createPhoneChallenge)
 	mux.HandleFunc("POST /api/v1/auth/phone/login", a.verifyPhone)
 	mux.HandleFunc("POST /api/v1/auth/token/refresh", a.refresh)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
+	// 账户、用量和消息接口只接受认证中间件解析出的 account_id，不相信客户端自行传入的身份字段。
 	mux.Handle("GET /api/v1/account/me", a.authenticate(http.HandlerFunc(a.me)))
 	mux.Handle("GET /api/v1/voice-sessions/{id}/usage", a.authenticate(http.HandlerFunc(a.sessionUsage)))
 	mux.Handle("GET /api/v1/usage/summary", a.authenticate(http.HandlerFunc(a.accountUsage)))
@@ -54,17 +57,14 @@ func New(accountsService accounts.Service, usageService usage.Service, deliveryS
 	return mux
 }
 
-// authenticate accepts only a verified Bearer token and replaces any preexisting
-// account context with the identity returned by the verifier.
+// authenticate 只接受通过校验的 Bearer Token，并用 verifier 返回的身份覆盖已有账户上下文。
+// 覆盖行为可以防止上游或测试代码预先注入伪造 account_id 后绕过认证。
 func (a *API) authenticate(next http.Handler) http.Handler {
 	return Authenticate(a.tokens, next)
 }
 
-// Authenticate validates the HTTP Bearer token and injects the resulting
-// account identity into the request context. It is shared by module routers
-// that are mounted beside the member-5 routes (for example language and voice
-// record handlers), so every user-facing protected route has the same
-// authentication boundary.
+// Authenticate 校验 HTTP Bearer Token，并把验证后的账户身份写入请求 Context。
+// 语言、Session 和语音记录等其他模块也复用这一中间件，保证所有用户侧受保护路由具有相同认证边界。
 func Authenticate(tokens accounts.AccessTokenVerifier, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if next == nil {
@@ -80,10 +80,8 @@ func Authenticate(tokens accounts.AccessTokenVerifier, next http.Handler) http.H
 	})
 }
 
-// AuthenticatedContext validates a Bearer credential and returns a context
-// containing only the account identity established by the verifier. Keeping
-// this helper separate lets conditional auth flows (such as optional
-// anonymous-account binding during phone login) reuse the exact same parser.
+// AuthenticatedContext 严格解析一个 Bearer 凭证，并只把 verifier 确认的账户 ID 写入新 Context。
+// 它独立于中间件，是为了让“手机号登录时可选合并匿名账户”这种条件认证流程复用同一校验逻辑。
 func AuthenticatedContext(ctx context.Context, authorization string, tokens accounts.AccessTokenVerifier) (context.Context, error) {
 	parts := strings.Fields(authorization)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || tokens == nil {
@@ -165,7 +163,7 @@ func decodeJSON(r *http.Request, target any) error {
 	return nil
 }
 
-// accountID reads only authentication middleware output, never client account fields.
+// accountID 只读取认证中间件的输出，绝不从请求体、查询参数或 Header 接受客户端账户 ID。
 func accountID(r *http.Request) (string, error) {
 	id, ok := accountIDFromContext(r.Context())
 	if !ok {
@@ -174,6 +172,8 @@ func accountID(r *http.Request) (string, error) {
 	return id, nil
 }
 
+// createAnonymous 为首次访问客户端建立临时账户和第一组 Token。
+// 后续产生的 Session、Turn 和 Usage 都先归属该账户，完成手机号登录后再迁移到正式账户。
 func (a *API) createAnonymous(w http.ResponseWriter, r *http.Request) {
 	result, err := a.accounts.CreateAnonymous(r.Context())
 	if err != nil {
@@ -183,6 +183,8 @@ func (a *API) createAnonymous(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, result)
 }
 
+// createPhoneChallenge 接收规范化手机号并返回不透明 challenge_id。
+// 验证码明文只能由 VerificationSender 交付，不能出现在 HTTP 响应中。
 func (a *API) createPhoneChallenge(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Phone string `json:"phone"`
@@ -199,6 +201,8 @@ func (a *API) createPhoneChallenge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"challenge_id": id})
 }
 
+// verifyPhone 完成验证码登录，并支持把当前客户端拥有的匿名账户合并到手机号账户。
+// 不带 anonymous_account_id 时该接口保持公开；一旦要求合并，就必须额外验证该匿名账户的 Access Token。
 func (a *API) verifyPhone(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		ChallengeID        string `json:"challenge_id"`
@@ -211,6 +215,7 @@ func (a *API) verifyPhone(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	if request.AnonymousAccountID != "" {
+		// 合并会迁移历史会话和业务数据，不能只凭请求体中的匿名账户 ID 执行。
 		var err error
 		ctx, err = AuthenticatedContext(ctx, r.Header.Get("Authorization"), a.tokens)
 		if err != nil {
@@ -231,6 +236,7 @@ func (a *API) verifyPhone(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// refresh 用 Refresh Token 原子轮换登录会话，成功后旧 Refresh Token 不能再次使用。
 func (a *API) refresh(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		RefreshToken string `json:"refresh_token"`
@@ -247,6 +253,7 @@ func (a *API) refresh(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// logout 按 Refresh Token 撤销登录会话；关联 Access Token 的会话状态校验随后也会失败。
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		RefreshToken string `json:"refresh_token"`
@@ -262,6 +269,7 @@ func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// me 返回认证上下文对应的当前账户，不提供查询其他账户的入口。
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {
@@ -276,6 +284,8 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// sessionUsage 查询当前账户名下一场业务 Session 的聚合用量。
+// 账户 ID 来自 Token，Session 归属由用量 Service 再次向 Session 权威数据源校验。
 func (a *API) sessionUsage(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {
@@ -290,6 +300,8 @@ func (a *API) sessionUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// accountUsage 查询当前账户在半开时间区间 [period_start, period_end) 内的聚合用量。
+// HTTP 层先保证时间可解析且 start < end，业务层会再次校验账户和时间边界。
 func (a *API) accountUsage(w http.ResponseWriter, r *http.Request) {
 	id, err := accountID(r)
 	if err != nil {

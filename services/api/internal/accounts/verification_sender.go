@@ -8,8 +8,8 @@ import (
 	"sync"
 )
 
-// LogVerificationSender delivers one-time codes to structured logs for local
-// development. Phone numbers are masked so logs stay safe to share.
+// LogVerificationSender 仅用于本地开发，把一次性验证码写入结构化日志。
+// 手机号会被掩码处理，避免开发日志直接泄露完整号码。
 type LogVerificationSender struct{}
 
 func (LogVerificationSender) SendCode(_ context.Context, phone, code string) error {
@@ -17,8 +17,8 @@ func (LogVerificationSender) SendCode(_ context.Context, phone, code string) err
 	return nil
 }
 
-// MemoryVerificationSender captures the most recent code per phone. Tests use
-// it to exercise the full phone-login flow without an external SMS provider.
+// MemoryVerificationSender 按手机号保存最近一次验证码，供测试在不连接短信供应商时走完整登录链路。
+// 可选 fallback 仍会收到同一验证码，便于同时观察交付行为。
 type MemoryVerificationSender struct {
 	mu     sync.Mutex
 	codes  map[string]string
@@ -46,8 +46,8 @@ func (m *MemoryVerificationSender) LastCode(phone string) (string, bool) {
 	return code, ok
 }
 
-// VerificationSenderFromEnv selects the configured verification delivery adapter.
-// Empty or "log" uses structured logs for local development.
+// VerificationSenderFromEnv 根据环境配置选择验证码交付适配器。
+// 空值或 log 只允许本地结构化日志实现；未知生产适配器返回 nil，使登录功能安全关闭。
 func VerificationSenderFromEnv() VerificationSender {
 	switch os.Getenv("VERIFICATION_SENDER") {
 	case "", "log":

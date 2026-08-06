@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// PostgresRepository 是用量事实与汇总的生产持久化实现。
+// 明细写入采用幂等键加完整 payload hash，汇总读取同时覆盖账户匿名阶段到注册阶段的 lineage。
 type PostgresRepository struct{ pool *pgxpool.Pool }
 
 const usageDetailProjection = `event_version,event_id,trace_id,idempotency_key,payload_hash,account_id,session_id,turn_id,service_type,provider,model,input_tokens,output_tokens,audio_duration_ms,COALESCE(cost_amount::text,''),COALESCE(currency,''),occurred_at,recorded_at`
@@ -21,6 +23,8 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 	return &PostgresRepository{pool: pool}
 }
 
+// Record 尝试插入一条不可变用量事实。
+// 首次写入返回 created=true；同键同 payload 返回原记录和 created=false；同键不同 payload 返回 conflict。
 func (r *PostgresRepository) Record(ctx context.Context, input RecordInput) (Detail, bool, error) {
 	hash, err := hashRecordInput(input)
 	if err != nil {
@@ -28,8 +32,8 @@ func (r *PostgresRepository) Record(ctx context.Context, input RecordInput) (Det
 	}
 	now := time.Now().UTC()
 	var storedHash []byte
-	// RETURNING makes the first response use the same NUMERIC and TIMESTAMPTZ
-	// representation as a later idempotent replay.
+	// 使用 RETURNING 让首次写入和后续幂等重放都经过数据库的 NUMERIC/TIMESTAMPTZ 表示，
+	// 避免第一次返回输入格式、重放却返回数据库格式造成响应不一致。
 	row := r.pool.QueryRow(ctx, `INSERT INTO lingow_usage_records (event_version, event_id, trace_id, idempotency_key, payload_hash, account_id, session_id, turn_id, service_type, provider, model, input_tokens, output_tokens, audio_duration_ms, cost_amount, currency, occurred_at, recorded_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NULLIF($15,'')::numeric,NULLIF($16,''),$17,$18) ON CONFLICT (idempotency_key) DO NOTHING RETURNING `+usageDetailProjection, input.EventVersion, input.ID, input.TraceID, input.IdempotencyKey, hash[:], input.AccountID, input.SessionID, input.TurnID, input.ServiceType, input.Provider, input.Model, input.InputTokens, input.OutputTokens, input.AudioDurationMS, input.CostAmount, input.Currency, input.OccurredAt.UTC(), now)
 	detail, err := scanUsageDetail(row, &storedHash)
 	if err == nil {
@@ -44,6 +48,7 @@ func (r *PostgresRepository) Record(ctx context.Context, input RecordInput) (Det
 		return Detail{}, false, err
 	}
 	if !equalHash(storedHash, hash[:]) {
+		// 幂等键只能代表一个确定事实；payload 发生变化说明生产者错误复用了 key。
 		return Detail{}, false, domain.ErrConflict
 	}
 	return detail, false, nil
@@ -57,6 +62,8 @@ func (r *PostgresRepository) AccountSummary(ctx context.Context, accountID strin
 	return r.summary(ctx, accountID, "", start, end)
 }
 
+// summary 根据可选 Session 和半开时间区间聚合用量。
+// lingow_account_lineage 会同时纳入账户匿名阶段和注册阶段的数据，而不修改历史事实 owner。
 func (r *PostgresRepository) summary(ctx context.Context, accountID, sessionID string, start, end time.Time) (Summary, error) {
 	args := []any{accountID}
 	where := `account_id IN (SELECT account_id FROM lingow_account_lineage($1))`
@@ -68,8 +75,8 @@ func (r *PostgresRepository) summary(ctx context.Context, accountID, sessionID s
 		args = append(args, start, end)
 		where += fmt.Sprintf(" AND occurred_at >= $%d AND occurred_at < $%d", len(args)-1, len(args))
 	}
-	// Counts preserve the distinction between fully unknown pricing and a
-	// partially priced group, which must not be reported as a lower total.
+	// 同时统计总行数和有价格行数，用于区分“该组价格全部未知”和“仅部分记录有价格”。
+	// 后一种情况不能只累加已知价格并返回一个偏低总额，而必须报告冲突。
 	rows, err := r.pool.Query(ctx, `SELECT service_type,COALESCE(currency,''),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(audio_duration_ms),0),COALESCE(SUM(cost_amount),0)::text,COUNT(*),COUNT(cost_amount) FROM lingow_usage_records WHERE `+where+` GROUP BY service_type,currency ORDER BY service_type,currency`, args...)
 	if err != nil {
 		return Summary{}, mapUsageError(err)
@@ -89,6 +96,7 @@ func (r *PostgresRepository) summary(ctx context.Context, accountID, sessionID s
 		}
 		total.CostAmount = amount
 		if seen[total.ServiceType] {
+			// 同一阶段出现多条结果通常表示混入不同币种；当前契约无法安全合并，拒绝模糊汇总。
 			return Summary{}, domain.ErrConflict
 		}
 		seen[total.ServiceType] = true
@@ -100,6 +108,8 @@ func (r *PostgresRepository) summary(ctx context.Context, accountID, sessionID s
 	return result, nil
 }
 
+// aggregateCost 校验一组聚合结果是否具有完整且单一的定价语义。
+// 全部未定价返回空金额；全部定价返回规范金额；部分定价或缺少币种均返回冲突。
 func aggregateCost(amount, currency string, rowCount, costCount int64) (string, error) {
 	if rowCount <= 0 || costCount < 0 || costCount > rowCount {
 		return "", domain.ErrConflict
@@ -134,8 +144,11 @@ func scanUsageDetail(row pgx.Row, hash *[]byte) (Detail, error) {
 }
 
 func equalHash(left, right []byte) bool {
+	// 摘要属于幂等判断的一部分，使用常量时间比较避免内容相关的比较时序差异。
 	return len(left) == len(right) && subtle.ConstantTimeCompare(left, right) == 1
 }
+
+// mapUsageError 将数据库错误稳定映射为领域错误，避免 HTTP 或消息消费者依赖 PostgreSQL 错误码。
 func mapUsageError(err error) error {
 	if err == nil {
 		return nil

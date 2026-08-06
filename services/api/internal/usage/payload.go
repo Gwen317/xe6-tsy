@@ -7,8 +7,8 @@ import (
 
 type recordPayloadHash [sha256.Size]byte
 
-// hashRecordInput defines the payload identity shared by in-memory and
-// PostgreSQL repositories when enforcing idempotency-key conflicts.
+// hashRecordInput 计算完整 RecordInput 的稳定身份摘要。
+// 内存和 PostgreSQL Repository 都用它判断：同一幂等键是完全一致的安全重放，还是内容变化的冲突请求。
 func hashRecordInput(input RecordInput) (recordPayloadHash, error) {
 	payload, err := json.Marshal(input)
 	if err != nil {

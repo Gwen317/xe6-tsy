@@ -8,7 +8,8 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
-// ParseRecordInput decodes a usage.recorded v1 JSON payload into RecordInput.
+// ParseRecordInput 将消息流中的 usage.recorded v1 JSON 解码为强类型 RecordInput。
+// 先解码到原始字符串 Stage，再显式转换和统一校验，未知事件版本或阶段不会被静默接受。
 func ParseRecordInput(payload []byte) (RecordInput, error) {
 	var raw struct {
 		EventVersion    int       `json:"event_version"`
@@ -55,7 +56,8 @@ func ParseRecordInput(payload []byte) (RecordInput, error) {
 	return input, nil
 }
 
-// MarshalRecordInput encodes a RecordInput as usage.recorded v1 JSON.
+// MarshalRecordInput 在发布前复用同一校验规则，把 RecordInput 编码为 usage.recorded v1 JSON。
+// 生产者和消费者共享校验入口，可以降低两侧对字段含义理解不一致的风险。
 func MarshalRecordInput(input RecordInput) ([]byte, error) {
 	if err := validate(input); err != nil {
 		return nil, err

@@ -14,9 +14,8 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// PostgresRepository owns durable account and authentication session state.
-// Secrets are stored only as hashes; access-token verification uses the signed
-// token plus the active-session lookup below.
+// PostgresRepository 持有账户、验证码挑战和登录会话的权威持久化状态。
+// 数据库只保存凭证摘要；Access Token 校验同时依赖签名和下方的活动会话查询。
 type PostgresRepository struct{ pool *pgxpool.Pool }
 
 const insertRegisteredAccountSQL = `INSERT INTO lingow_accounts (id, kind, phone_hash_v2, created_at) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`
@@ -59,6 +58,8 @@ func (r *PostgresRepository) GetAccount(ctx context.Context, id string) (Account
 	return account, nil
 }
 
+// CreateChallenge 在事务内串行化同一手机号的并发申请，执行冷却和小时级发送上限后再写入挑战。
+// 即使多个 API 实例同时处理同一手机号，也只能基于同一组权威计数做出决定。
 func (r *PostgresRepository) CreateChallenge(ctx context.Context, challenge PhoneChallenge) error {
 	if challenge.MaxAttempts == 0 {
 		challenge.MaxAttempts = defaultPhoneChallengeMaxAttempts
@@ -67,8 +68,7 @@ func (r *PostgresRepository) CreateChallenge(ctx context.Context, challenge Phon
 		challenge.CreatedAt = time.Now().UTC()
 	}
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		// Advisory locking serializes requests for the same private phone hash
-		// across API instances, including when no challenge row exists yet.
+		// advisory lock 按私有手机号摘要串行化跨实例请求，即使该手机号还没有任何挑战记录也有效。
 		if _, err := tx.Exec(ctx, challengeAdvisoryLockSQL, challenge.PhoneHash); err != nil {
 			return err
 		}
@@ -98,6 +98,8 @@ func (r *PostgresRepository) CreateChallenge(ctx context.Context, challenge Phon
 	return mapError(err)
 }
 
+// ConsumeChallenge 对挑战行加锁，原子检查过期、消费状态、尝试上限和验证码摘要。
+// 错误验证码先增加 attempts 并提交事务，再返回 unauthorized；正确验证码写入 used_at 后返回私有绑定信息。
 func (r *PostgresRepository) ConsumeChallenge(ctx context.Context, id, code string) (PhoneChallenge, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -128,8 +130,7 @@ func (r *PostgresRepository) ConsumeChallenge(ctx context.Context, id, code stri
 		return PhoneChallenge{}, domain.ErrUnauthorized
 	}
 	if challenge.DigestVersion != 2 || subtle.ConstantTimeCompare([]byte(code), []byte(challenge.CodeHash)) != 1 {
-		// This branch intentionally commits before returning. A rollback here
-		// would make unlimited guesses possible against the same challenge.
+		// 该错误分支必须先提交 attempts 再返回；如果事务回滚，攻击者可以无限猜测同一个挑战。
 		if _, err := tx.Exec(ctx, `
 			UPDATE lingow_phone_challenges
 			SET attempts = attempts + 1, last_attempt_at = $2
@@ -157,9 +158,8 @@ func (r *PostgresRepository) ConsumeChallenge(ctx context.Context, id, code stri
 }
 
 func (r *PostgresRepository) RestoreChallenge(ctx context.Context, id string) error {
-	// A consumed row cannot be claimed by another verifier. Clearing only used
-	// rows therefore compensates a later persistence failure without turning an
-	// incorrect-code attempt into a reusable challenge.
+	// 已成功消费的行不会被其他验证流程再次领取；只清理 used_at 非空的记录，
+	// 可以补偿后续持久化失败，又不会把错误验证码尝试变成可重用挑战。
 	_, err := r.pool.Exec(ctx, `UPDATE lingow_phone_challenges SET used_at=NULL WHERE id=$1 AND used_at IS NOT NULL`, id)
 	return mapError(err)
 }
@@ -175,9 +175,8 @@ func (r *PostgresRepository) FindOrCreateByPhoneHashes(ctx context.Context, phon
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Account{}, mapError(err)
 	}
-	// Existing accounts are located through their historical SHA-256 digest and
-	// upgraded in place. Once the keyed digest exists, remove the legacy value so
-	// the weak deterministic identifier is retained only until that first login.
+	// 旧账户通过历史 SHA-256 摘要定位并原地升级；写入带密钥的 v2 摘要后删除旧值，
+	// 使弱确定性标识只保留到该账户第一次完成新版本登录。
 	err = r.pool.QueryRow(ctx, `SELECT id, kind, created_at FROM lingow_accounts WHERE phone_hash=$1 AND merged_into IS NULL`, legacyPhoneHash).Scan(&account.ID, &kind, &account.CreatedAt)
 	if err == nil {
 		account.Kind = AccountKind(kind)
@@ -190,8 +189,7 @@ func (r *PostgresRepository) FindOrCreateByPhoneHashes(ctx context.Context, phon
 		return Account{}, mapError(err)
 	}
 	account = Account{ID: "acct_" + ulid.Make().String(), Kind: AccountKindRegistered, CreatedAt: time.Now().UTC()}
-	// New accounts never persist the weak deterministic SHA-256 value. The legacy
-	// hash is used only to locate and upgrade pre-v2 accounts above.
+	// 新账户不再持久化弱确定性 SHA-256 值；legacy hash 只用于上方查找和升级旧账户。
 	_, err = r.pool.Exec(ctx, insertRegisteredAccountSQL, account.ID, string(account.Kind), phoneHash, account.CreatedAt)
 	if err != nil {
 		return Account{}, mapError(err)
@@ -255,9 +253,8 @@ func (r *PostgresRepository) BindAnonymous(ctx context.Context, anonymousID, reg
 	return r.GetAccount(ctx, registeredID)
 }
 
-// BindAnonymousAndCreateSession is the login-path variant of BindAnonymous.
-// All ownership changes and the first registered session are committed by one
-// transaction, so a session insert failure rolls the merge back.
+// BindAnonymousAndCreateSession 是手机号登录主路径使用的匿名账户合并操作。
+// 账户归属迁移和首个正式登录会话在同一事务提交；会话插入失败会回滚全部合并变化。
 func (r *PostgresRepository) BindAnonymousAndCreateSession(ctx context.Context, anonymousID, registeredID string, session Session) (Account, error) {
 	if anonymousID == "" || registeredID == "" || anonymousID == registeredID || session.ID == "" || session.AccountID != registeredID {
 		return Account{}, domain.ErrConflict
@@ -315,10 +312,8 @@ func (r *PostgresRepository) GetSessionByRefreshHash(ctx context.Context, hash s
 }
 
 func (r *PostgresRepository) RotateSession(ctx context.Context, currentSessionID string, successor Session) error {
-	// Revocation and successor insertion share one transaction so an insert
-	// failure rolls both changes back and a commit publishes them together.
-	// The conditional update also serializes concurrent refresh attempts: only
-	// the transaction that changes the active row may persist a successor.
+	// 撤销旧会话与插入后继会话共用一个事务，插入失败时两项变化一起回滚。
+	// 条件 UPDATE 也会串行化并发刷新：只有真正把活动行改为 revoked 的事务可以创建后继会话。
 	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		result, err := tx.Exec(ctx, rotateActiveSessionSQL, currentSessionID, successor.AccountID)
 		if err != nil {
@@ -334,8 +329,7 @@ func (r *PostgresRepository) RotateSession(ctx context.Context, currentSessionID
 }
 
 func (r *PostgresRepository) RevokeSession(ctx context.Context, id string) error {
-	// Conditional revocation reports a stale logout or replay instead of
-	// silently treating an already-revoked session as active.
+	// 条件撤销会把过期退出请求或重放显式映射为无效凭证，而不是假装已撤销会话仍处于活动状态。
 	result, err := r.pool.Exec(ctx, revokeActiveSessionSQL, id)
 	if err != nil {
 		return mapError(err)
@@ -350,8 +344,7 @@ func revokeSessionResult(rowsAffected int64) error {
 	return nil
 }
 
-// PurgeExpiredAuthSessions revokes sessions that have passed their expiry so
-// refresh lookup stays bounded and expired credentials cannot linger active.
+// PurgeExpiredAuthSessions 批量撤销已过期登录会话，控制活动查询范围并防止过期凭证继续显示为活动。
 func (r *PostgresRepository) PurgeExpiredAuthSessions(ctx context.Context) (int64, error) {
 	result, err := r.pool.Exec(ctx, `
 		UPDATE lingow_auth_sessions
@@ -364,8 +357,7 @@ func (r *PostgresRepository) PurgeExpiredAuthSessions(ctx context.Context) (int6
 	return result.RowsAffected(), nil
 }
 
-// PurgeStalePhoneChallenges removes expired and long-consumed challenges so
-// verification state does not grow without bound.
+// PurgeStalePhoneChallenges 删除过期或已消费超过保留期的挑战，避免验证码状态无限增长。
 func (r *PostgresRepository) PurgeStalePhoneChallenges(ctx context.Context, retention time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-retention)
 	result, err := r.pool.Exec(ctx, `
@@ -384,25 +376,23 @@ func (r *PostgresRepository) SessionActive(ctx context.Context, id string) (bool
 	return active, mapError(err)
 }
 
-// SessionActiveForAccount validates the session's lifecycle and its current
-// ownership together. The account predicate is required because anonymous
-// account binding can move existing sessions to a registered account; a token
-// issued before that move must no longer authorize as the old subject.
+// SessionActiveForAccount 同时校验登录会话生命周期与当前账户归属。
+// 匿名账户合并会迁移既有会话；加入 account 条件后，合并前签发的旧 subject Token 会立即失效。
 func (r *PostgresRepository) SessionActiveForAccount(ctx context.Context, sessionID, accountID string) (bool, error) {
 	var active bool
 	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM lingow_auth_sessions WHERE id=$1 AND account_id=$2 AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP)`, sessionID, accountID).Scan(&active)
 	return active, mapError(err)
 }
 
-// AccountIDForSession returns the immutable owner stored on the voice session.
+// AccountIDForSession 返回业务 Session 创建时保存的不可变账户 owner，供用量模块校验事件归属。
 func (r *PostgresRepository) AccountIDForSession(ctx context.Context, sessionID string) (string, error) {
 	var accountID string
 	err := r.pool.QueryRow(ctx, `SELECT account_id FROM voice_sessions WHERE id=$1`, sessionID).Scan(&accountID)
 	return accountID, mapError(err)
 }
 
-// CanonicalAccountID follows an account's merge chain to its active owner.
-// The visited set prevents a malformed historical cycle from looping forever.
+// CanonicalAccountID 沿账户合并链查找当前活动账户。
+// 递归查询携带 visited 集合，避免异常历史数据形成环后无限递归。
 func (r *PostgresRepository) CanonicalAccountID(ctx context.Context, accountID string) (string, error) {
 	var canonicalID string
 	err := r.pool.QueryRow(ctx, `

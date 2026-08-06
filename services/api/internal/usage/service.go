@@ -12,9 +12,11 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/api/internal/domain"
 )
 
+// UseCases 是用量模块的业务编排层，负责校验事实、确认 Session 归属并调用幂等存储。
+// 它不读取客户端声明的身份；HTTP 查询账户来自认证 Context，事件账户还要与 Session 权威归属核对。
 type UseCases struct {
-	repository Repository
-	owners     SessionOwnerReader
+	repository Repository         // 用量明细与汇总的持久化端口。
+	owners     SessionOwnerReader // Session 所有权及匿名账户合并链的权威读端口。
 }
 
 const (
@@ -23,22 +25,24 @@ const (
 	usageCostIntegerDigits  = 12
 )
 
-// These patterns mirror the usage.recorded v1 contract. An empty cost and
-// currency pair means that the provider did not report pricing; it is distinct
-// from a reported zero amount and is stored as SQL NULL by the PostgreSQL
-// adapter. The storage precision limits below prevent PostgreSQL from silently
-// rounding an accepted event.
+// 以下格式与 usage.recorded v1 契约保持一致。
+// cost 与 currency 同时为空表示供应商没有报告价格，与明确报告 0 金额含义不同，PostgreSQL 会保存为 NULL。
+// 精度限制在业务层提前校验，避免数据库对已经接受的金额执行静默舍入。
 var (
 	usageCostPattern     = regexp.MustCompile(`^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$`)
 	usageCurrencyPattern = regexp.MustCompile(`^[A-Z]{3}$`)
 )
 
+// NewUseCases 创建安全关闭实现；未接入 Repository 时返回 not_implemented，不在内存中伪造生产用量。
 func NewUseCases() *UseCases { return &UseCases{} }
 
+// NewPersistentUseCases 连接持久化 Repository 与 Session 权威归属读取器。
 func NewPersistentUseCases(repository Repository, owners SessionOwnerReader) *UseCases {
 	return &UseCases{repository: repository, owners: owners}
 }
 
+// Record 接收一条后端 usage.recorded 事实，校验契约和 Session 归属后执行幂等持久化。
+// 若匿名账户已经合并，只允许 canonical account 相同的事实继续写入，并保留 Session 创建时的原始 owner。
 func (u *UseCases) Record(ctx context.Context, input RecordInput) (Detail, error) {
 	if u.repository == nil {
 		return Detail{}, domain.ErrNotImplemented
@@ -54,15 +58,16 @@ func (u *UseCases) Record(ctx context.Context, input RecordInput) (Detail, error
 		if err := u.sameCanonicalAccount(ctx, owner, input.AccountID); err != nil {
 			return Detail{}, err
 		}
-		// The session/account composite foreign key retains the immutable owner
-		// recorded when the session was created. A post-merge caller is allowed
-		// after canonical comparison, but storage keeps that original owner.
+		// Session/account 复合外键保留 Session 创建时记录的不可变 owner。
+		// 账户合并后的调用经 canonical 比较可以通过，但落库仍使用原始 owner，保证历史事实稳定。
 		input.AccountID = owner
 	}
 	detail, _, err := u.repository.Record(ctx, input)
 	return detail, err
 }
 
+// sameCanonicalAccount 判断两个账户 ID 是否最终归属于同一活动账户。
+// 没有 resolver 时只允许 ID 完全相同；无法证明同源就返回 forbidden，而不是放宽归属校验。
 func (u *UseCases) sameCanonicalAccount(ctx context.Context, left, right string) error {
 	if left == right {
 		return nil
@@ -85,6 +90,8 @@ func (u *UseCases) sameCanonicalAccount(ctx context.Context, left, right string)
 	return nil
 }
 
+// SessionUsage 查询单场 Session 汇总前再次校验当前账户是否拥有该 Session。
+// 这层校验位于业务层，消息消费者或其他内部调用也不能绕过 HTTP 中间件直接读取他人用量。
 func (u *UseCases) SessionUsage(ctx context.Context, accountID, sessionID string) (Summary, error) {
 	if u.repository == nil {
 		return Summary{}, domain.ErrNotImplemented
@@ -104,6 +111,7 @@ func (u *UseCases) SessionUsage(ctx context.Context, accountID, sessionID string
 	return u.repository.SessionSummary(ctx, accountID, sessionID)
 }
 
+// AccountUsage 返回账户在半开区间 [start, end) 内的汇总；非法或空时间范围会提前拒绝。
 func (u *UseCases) AccountUsage(ctx context.Context, accountID string, start, end time.Time) (Summary, error) {
 	if u.repository == nil {
 		return Summary{}, domain.ErrNotImplemented
@@ -114,6 +122,8 @@ func (u *UseCases) AccountUsage(ctx context.Context, accountID string, start, en
 	return u.repository.AccountSummary(ctx, accountID, start, end)
 }
 
+// validate 对 usage.recorded v1 做完整业务校验。
+// 校验通过只代表结构和度量合法，Session 所有权与幂等冲突仍由 Record 后续步骤判断。
 func validate(input RecordInput) error {
 	if input.EventVersion != UsageEventVersion || input.ID == "" || input.TraceID == "" || input.IdempotencyKey == "" || input.AccountID == "" || input.SessionID == "" || input.TurnID == "" || input.Provider == "" || input.Model == "" || input.OccurredAt.IsZero() {
 		return domain.ErrInvalidArgument
@@ -129,6 +139,7 @@ func validate(input RecordInput) error {
 	if input.InputTokens < 0 || input.OutputTokens < 0 || input.AudioDurationMS < 0 {
 		return domain.ErrInvalidArgument
 	}
+	// 金额与币种必须同时出现；只有一项会让汇总结果无法解释。
 	if (input.CostAmount == "") != (input.Currency == "") {
 		return domain.ErrInvalidArgument
 	}
@@ -150,8 +161,8 @@ func validate(input RecordInput) error {
 	return nil
 }
 
-// MemoryRepository remains available for deterministic local tests; production
-// wiring uses PostgresRepository below.
+// MemoryRepository 只用于确定性的本地单元测试，生产装配使用 PostgresRepository。
+// 它与 PostgreSQL 实现共享 payload hash 规则，保证测试覆盖真实幂等语义。
 type MemoryRepository struct {
 	mu    sync.RWMutex
 	facts []Detail
@@ -177,6 +188,7 @@ func (r *MemoryRepository) Record(ctx context.Context, input RecordInput) (Detai
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if old, ok := r.byKey[input.IdempotencyKey]; ok {
+		// 相同 key 和相同 payload 是安全重放；相同 key 携带不同内容必须拒绝，不能覆盖原事实。
 		if old.payloadHash != hash {
 			return Detail{}, false, domain.ErrConflict
 		}
@@ -217,8 +229,7 @@ func summarize(facts []Detail, accountID, sessionID string, start, end time.Time
 			total = &StageTotal{ServiceType: fact.ServiceType, Currency: fact.Currency}
 			totals[fact.ServiceType] = total
 		} else if total.Currency != fact.Currency {
-			// A single stage total cannot safely combine different currencies;
-			// this matches the PostgreSQL adapter's grouped-query conflict rule.
+			// 单个阶段汇总不能安全合并不同币种；该规则与 PostgreSQL 聚合实现保持一致。
 			return Summary{}, domain.ErrConflict
 		}
 		total.InputTokens += fact.InputTokens
@@ -241,6 +252,7 @@ func summarize(facts []Detail, accountID, sessionID string, start, end time.Time
 	return result, nil
 }
 func addMoney(left, right string) (string, bool) {
+	// 使用有理数而不是 float64 累加金额，避免二进制浮点误差影响计费结果。
 	if left == "" && right == "" {
 		return "", true
 	}

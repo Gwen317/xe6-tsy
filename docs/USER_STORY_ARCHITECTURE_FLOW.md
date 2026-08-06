@@ -46,7 +46,7 @@ sequenceDiagram
     participant Next as moduleB至moduleD 后续概览
 
     User->>Client: 点击开始对话
-    rect rgb(239, 248, 244)
+    rect rgba(36, 150, 125, 0.16)
         Note over A: 当前展开 moduleA
         Client->>A: Bearer Token 和 CreateSession
         A->>A: 校验 Token 并取得 account_id
@@ -102,7 +102,7 @@ sequenceDiagram
     participant C as moduleC 下游概览
 
     A-->>B: OutputA account_id 和 session_id
-    rect rgb(239, 248, 244)
+    rect rgba(36, 150, 125, 0.16)
         Note over B: 当前展开 moduleB
         Client->>B: 提交双语语言配置
         B->>B: 校验 Session 归属和语言组合
@@ -175,7 +175,7 @@ sequenceDiagram
     participant D as moduleD 下游概览
 
     B-->>Client: OutputB session_id 配置版本和 ticket
-    rect rgb(239, 248, 244)
+    rect rgba(36, 150, 125, 0.16)
         Note over C: 当前展开 moduleC
         Client->>C: start 和 WebRTC offer ICE
         C->>C: 校验 ticket 并固定本 Turn 配置
@@ -298,7 +298,7 @@ sequenceDiagram
 
     C-->>Records: FinalTurn 通过可靠事件表
     C-->>Usage: UsageFact 通过可靠消息流
-    rect rgb(239, 248, 244)
+    rect rgba(36, 150, 125, 0.16)
         Note over Records,Usage: 当前展开 moduleD
         Records->>Records: 按 event_id 幂等消费
         Records->>Records: 保存 VoiceTurn 和待定说话人归属
@@ -385,7 +385,7 @@ sequenceDiagram
     participant A as moduleA 账户与会话
     participant C as moduleC 实时转译
 
-    rect rgb(239, 248, 244)
+    rect rgba(36, 150, 125, 0.16)
         Note over A,C: 当前展开结束会话协作
         Client->>A: EndSession session_id 和 reason
         A->>A: 校验账户归属和当前业务状态

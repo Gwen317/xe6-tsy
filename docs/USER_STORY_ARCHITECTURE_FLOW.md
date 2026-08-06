@@ -585,3 +585,68 @@ services/api/internal/usage
 沿着一次用户对话来看，完整链路就是：认证并创建会话，保存双语配置并取得短期接入凭证，建立实时音频连接，完成一句话的句末检测、识别、翻译和语音合成，把即时结果推送给客户端，把最终话轮和用量可靠交给后端，最后停止实时运行并结束业务会话。
 
 这套划分带来的价值有三个。第一，实时处理状态和长期业务状态不会互相混淆；第二，客户端的低延迟体验和后端的可靠保存可以分别保证；第三，识别、翻译、语音合成、存储和消息系统都通过明确边界接入，后续替换具体实现时不会破坏整条用户故事。
+
+## 附录 A：事件分层与当前实现状态
+
+上面 `client_events` 中的数组仅用于集中展示可能涉及的事件类型，不代表服务端会在一个响应中一次性返回这些事件。真实运行中，事件会随着 ASR、翻译和播放进度分别产生，而且并非所有事件当前都会发送给客户端。
+
+| 事件 | 当前后端用途 | 当前是否发送客户端 | 当前 Web 是否消费 |
+| --- | --- | --- | --- |
+| `asr.partial` | ASR Provider 的临时识别结果；当前 Pipeline 忽略非 final 事件 | 否 | 否 |
+| `asr.final` | 触发翻译、Final Turn、用量记录和 TTS | 不作为独立事件发送 | 否；最终原文包含在 `translation.final` 中 |
+| `translation.final` | 配置数据库时可靠写入 Recordstore，同时形成客户端字幕 | 是，通过 DataChannel 尽力而为发送 | 是 |
+| `tts.audio` | PCM 下行模式下向浏览器发送 TTS 音频分片 | PCM 模式发送 | 是，由浏览器重组并播放 |
+| `playback.started` | Opus 下行模式下更新播放状态并表示音频开始 | Opus 模式发送 | 当前未显式消费 |
+| `playback.finished` | Opus 下行模式下结束播放状态 | Opus 模式发送 | 当前未显式消费 |
+
+内部 ASR 事件的当前处理链路是：
+
+```text
+ASR Provider
+  -> asr.partial
+       -> 当前 Pipeline 忽略
+       -> 未来可以转发客户端用于实时字幕
+
+  -> asr.final
+       -> Translation
+       -> FinalTurn Publish
+       -> Usage Publish
+       -> TTS
+       -> Playback
+```
+
+`translation.final` 会在同一业务事实形成后交付到两个不同方向，但两个方向的可靠性要求不同：
+
+```text
+translation.final
+  -> DataChannel -> Client
+       // 用于即时字幕展示，当前本地实时链路采用尽力而为发送
+
+  -> Durable Outbox -> Recordstore
+       // 启用数据库集成时，用于幂等持久化 VoiceTurn 并支持可靠重试
+```
+
+TTS 客户端交互取决于下行模式：
+
+```text
+REALTIME_TTS_DOWNLINK=none
+  -> 不发送 TTS 音频
+
+REALTIME_TTS_DOWNLINK=pcm
+  -> DataChannel 发送 tts.audio
+  -> Web 重组 PCM 或音频容器后在本地播放
+
+REALTIME_TTS_DOWNLINK=opus
+  -> WebRTC TTS audio track 播放
+  -> DataChannel 发送 playback.started / playback.finished
+```
+
+因此，当前实现中 `asr.partial` 和 `asr.final` 属于实时服务内部处理事件；`translation.final` 同时服务于客户端展示和后端持久化；`tts.audio` 与 `playback.*` 是否发送，则由 TTS 下行模式决定。`usage.recorded` 是后端事件，不发送给客户端；启用 usage outbox 后才具备持久化和可靠重试能力。
+
+关键代码边界：
+
+- [services/realtime-audio/controlplane/http.go](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/realtime-audio/controlplane/http.go)：实时 Start、Stop、runtime 和 WebRTC 控制面；
+- [services/realtime-audio/runtime/manager.go](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/realtime-audio/runtime/manager.go)：每个 Session 的媒体运行时装配和生命周期；
+- [services/realtime-audio/vad/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/realtime-audio/vad) 与 [services/realtime-audio/segment/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/realtime-audio/segment)：音频帧和句末检测；
+- [services/realtime-audio/pipeline/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/realtime-audio/pipeline)：ASR、翻译和 TTS 编排；
+- [services/realtime-audio/asr/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/realtime-audio/asr)、[services/realtime-audio/translate/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/realtime-audio/translate) 与 [services/realtime-audio/tts/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/realtime-audio/tts)：Provider 替换边界。

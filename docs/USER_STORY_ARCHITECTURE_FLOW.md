@@ -267,23 +267,62 @@ moduleC = RealtimeTranslationModule {
             "translated_text": "Hello, nice to meet you", // 翻译 Provider 返回的最终译文正文
             "language_config_version": 3     // 本 Turn 实际使用的语言配置版本
         },
-        "usage_recorded": {                  // 交给用量模块幂等汇总的用量事实
-            "idempotency_key": "usage_turn_001", // 用量事实的去重键，重试不能重复计量
-            "items": [                       // 本 Turn 中各 Provider 能力产生的用量明细
-                {
-                    "service": "asr",        // 用量类型：语音识别
-                    "amount": 3200            // ASR 用量值，实际单位由正式 contracts 定义
-                },
-                {
-                    "service": "translation", // 用量类型：文本翻译
-                    "amount": 1               // 翻译用量值，实际单位由正式 contracts 定义
-                },
-                {
-                    "service": "tts",        // 用量类型：语音合成
-                    "amount": 2800            // TTS 用量值，实际单位由正式 contracts 定义
-                }
-            ]
-        }
+        "usage_recorded_events": [           // 同一 Turn 各 Provider 阶段分别产生的 usage.recorded v1 事件
+            {
+                "event_version": 1,          // 用量事件契约版本；当前消费者只接受版本 1
+                "id": "usage_turn_001_asr", // ASR 用量事件的唯一 ID，用于追踪生产和消费链路
+                "trace_id": "trace_001",    // 贯穿 realtime-audio、消息流和 API 的链路追踪 ID
+                "idempotency_key": "usage:turn_001:asr", // ASR 阶段独立去重键；重试必须保持完整 payload 不变
+                "account_id": "acct_001",   // Session 所属账户；API 落库前会再次核对权威归属
+                "session_id": "sess_001",   // 本条用量事实所属的业务 Session
+                "turn_id": "turn_001",      // 本条用量事实所属的句级 Turn
+                "service_type": "asr",      // Provider 阶段；此事件表示语音识别用量
+                "provider": "asr-provider", // 实际执行语音识别的 Provider 标识
+                "model": "asr-model",       // Provider 使用的语音识别模型标识
+                "input_tokens": 0,           // ASR 不按文本输入 Token 计量时填 0
+                "output_tokens": 0,          // ASR 不按文本输出 Token 计量时填 0
+                "audio_duration_ms": 3200,   // 本次 ASR 处理的可计量音频时长，单位毫秒
+                "cost_amount": "0.0032",    // Provider 报告的十进制成本金额；未知时与 currency 同时为空
+                "currency": "USD",          // 成本币种，使用 ISO 4217 三位大写代码
+                "occurred_at": "2026-08-05T09:59:58Z" // ASR 用量实际发生时间，用于时间区间汇总
+            },
+            {
+                "event_version": 1,          // 用量事件契约版本；三个阶段使用相同的 v1 结构
+                "id": "usage_turn_001_translation", // 翻译用量事件的唯一 ID
+                "trace_id": "trace_001",    // 与同一 Turn 的其他事实共享链路追踪 ID
+                "idempotency_key": "usage:turn_001:translation", // 翻译阶段独立去重键
+                "account_id": "acct_001",   // Session 所属账户，不能由客户端直接指定
+                "session_id": "sess_001",   // 本条翻译用量所属的业务 Session
+                "turn_id": "turn_001",      // 与 ASR 事件相同，表示来自同一句话
+                "service_type": "translation", // Provider 阶段；此事件表示文本翻译用量
+                "provider": "translation-provider", // 实际执行翻译的 Provider 标识
+                "model": "translation-model", // Provider 使用的翻译模型标识
+                "input_tokens": 8,           // 本次翻译提交给模型的输入 Token 数
+                "output_tokens": 6,          // 本次翻译由模型生成的输出 Token 数
+                "audio_duration_ms": 0,      // 文本翻译不按音频时长计量时填 0
+                "cost_amount": "0.0004",    // Provider 报告的本次翻译成本金额
+                "currency": "USD",          // 与 cost_amount 配套的 ISO 4217 币种
+                "occurred_at": "2026-08-05T09:59:59Z" // 翻译用量实际发生时间
+            },
+            {
+                "event_version": 1,          // 用量事件契约版本；当前固定为 1
+                "id": "usage_turn_001_tts", // TTS 用量事件的唯一 ID
+                "trace_id": "trace_001",    // 与当前 Turn 其他处理阶段关联的追踪 ID
+                "idempotency_key": "usage:turn_001:tts", // TTS 阶段独立去重键
+                "account_id": "acct_001",   // Session 所属账户，供归属核验和账户汇总
+                "session_id": "sess_001",   // 本条 TTS 用量所属的业务 Session
+                "turn_id": "turn_001",      // 与 ASR、翻译事件关联到同一句话
+                "service_type": "tts",      // Provider 阶段；此事件表示语音合成用量
+                "provider": "tts-provider", // 实际执行语音合成的 Provider 标识
+                "model": "tts-model",       // Provider 使用的语音合成模型标识
+                "input_tokens": 0,           // 当前 TTS 不按文本输入 Token 计量时填 0
+                "output_tokens": 0,          // 当前 TTS 不按文本输出 Token 计量时填 0
+                "audio_duration_ms": 2800,   // 本次 TTS 生成的可计量音频时长，单位毫秒
+                "cost_amount": "0.0028",    // Provider 报告的本次语音合成成本金额
+                "currency": "USD",          // 与 cost_amount 配套的 ISO 4217 币种
+                "occurred_at": "2026-08-05T10:00:00Z" // TTS 用量实际发生时间
+            }
+        ]
     }
 }
 ```
@@ -300,7 +339,7 @@ moduleC = RealtimeTranslationModule {
 
 ### 3.4 moduleD：记录与用量模块
 
-这张图把实时处理压缩为两个最终事实，只展开记录和用量的可靠消费、幂等保存及查询：
+这张图把实时处理压缩为 FinalTurn 和逐阶段 UsageFact，只展开记录和用量的可靠消费、幂等保存及查询：
 
 ```mermaid
 sequenceDiagram
@@ -310,13 +349,13 @@ sequenceDiagram
     participant Client as Web/Mobile
 
     C-->>Records: FinalTurn 通过可靠事件表
-    C-->>Usage: UsageFact 通过可靠消息流
+    C-->>Usage: 各 Provider 阶段的 UsageFact 通过可靠消息流
     rect rgba(36, 150, 125, 0.16)
         Note over Records,Usage: 当前展开 moduleD
         Records->>Records: 按 event_id 幂等消费
         Records->>Records: 保存 VoiceTurn 和待定说话人归属
-        Usage->>Usage: 按 idempotency_key 去重
-        Usage->>Usage: 累加 ASR 翻译和 TTS 用量
+        Usage->>Usage: 每条事实按独立 idempotency_key 去重
+        Usage->>Usage: 按阶段累加 Token 音频时长和成本
         Client->>Records: 查询 Session 的 Final Turns
         Records-->>Client: 返回持久化 VoiceTurn
         Client->>Usage: 查询 Session 用量
@@ -338,47 +377,132 @@ moduleD = RecordAndUsageModule {
             "translated_text": "Hello, nice to meet you", // 需要长期保存的最终译文
             "language_config_version": 3     // 用于追溯本轮翻译语义的配置版本
         },
-        "usage_recorded": {                  // realtime-audio 交给账户用量模块的事实
-            "idempotency_key": "usage_turn_001", // 确保消息重试不会造成重复计量
-            "items": [                       // 需要按账户和会话汇总的用量明细
-                {
-                    "service": "asr",        // 本条明细属于语音识别能力
-                    "amount": 3200            // 本次 ASR 调用产生的用量值
-                },
-                {
-                    "service": "translation", // 本条明细属于翻译能力
-                    "amount": 1               // 本次翻译调用产生的用量值
-                },
-                {
-                    "service": "tts",        // 本条明细属于语音合成能力
-                    "amount": 2800            // 本次 TTS 调用产生的用量值
-                }
-            ]
-        }
+        "usage_recorded_events": [           // realtime-audio 逐阶段交给账户用量模块的 usage.recorded v1 事实
+            {
+                "event_version": 1,          // 用量事件契约版本；当前消费者只接受版本 1
+                "id": "usage_turn_001_asr", // ASR 用量事件的唯一 ID
+                "trace_id": "trace_001",    // 跨服务、消息流和数据库的链路追踪 ID
+                "idempotency_key": "usage:turn_001:asr", // ASR 阶段独立去重键；同键不同 payload 会被拒绝
+                "account_id": "acct_001",   // 事件声明的账户；落库前会与 Session 权威归属核对
+                "session_id": "sess_001",   // 本条事实所属的业务 Session
+                "turn_id": "turn_001",      // 本条事实所属的句级 Turn
+                "service_type": "asr",      // 用量阶段；此事件记录语音识别调用
+                "provider": "asr-provider", // 实际执行语音识别的 Provider 标识
+                "model": "asr-model",       // Provider 使用的语音识别模型标识
+                "input_tokens": 0,           // ASR 不按文本输入 Token 计量时填 0
+                "output_tokens": 0,          // ASR 不按文本输出 Token 计量时填 0
+                "audio_duration_ms": 3200,   // 本次 ASR 处理的音频时长，单位毫秒
+                "cost_amount": "0.0032",    // 本次 ASR 成本金额；未知时与 currency 同时为空
+                "currency": "USD",          // 成本金额使用的 ISO 4217 三位币种
+                "occurred_at": "2026-08-05T09:59:58Z" // 用量实际发生时间，而不是消息消费时间
+            },
+            {
+                "event_version": 1,          // 用量事件契约版本；当前固定为 1
+                "id": "usage_turn_001_translation", // 翻译用量事件的唯一 ID
+                "trace_id": "trace_001",    // 与同一 Turn 其他阶段共享的追踪 ID
+                "idempotency_key": "usage:turn_001:translation", // 翻译阶段独立去重键
+                "account_id": "acct_001",   // 当前 Session 的账户归属
+                "session_id": "sess_001",   // 本条翻译用量所属的业务 Session
+                "turn_id": "turn_001",      // 与 ASR 事件相同，表示来自同一句话
+                "service_type": "translation", // 用量阶段；此事件记录文本翻译调用
+                "provider": "translation-provider", // 实际执行翻译的 Provider 标识
+                "model": "translation-model", // Provider 使用的翻译模型标识
+                "input_tokens": 8,           // 本次翻译输入模型的 Token 数
+                "output_tokens": 6,          // 本次翻译输出模型的 Token 数
+                "audio_duration_ms": 0,      // 文本翻译不按音频时长计量时填 0
+                "cost_amount": "0.0004",    // 本次翻译成本金额
+                "currency": "USD",          // 与成本金额配套的 ISO 4217 币种
+                "occurred_at": "2026-08-05T09:59:59Z" // 翻译用量实际发生时间
+            },
+            {
+                "event_version": 1,          // 用量事件契约版本；当前固定为 1
+                "id": "usage_turn_001_tts", // TTS 用量事件的唯一 ID
+                "trace_id": "trace_001",    // 与当前 Turn 其他处理阶段关联的追踪 ID
+                "idempotency_key": "usage:turn_001:tts", // TTS 阶段独立去重键
+                "account_id": "acct_001",   // 当前 Session 的账户归属
+                "session_id": "sess_001",   // 本条 TTS 用量所属的业务 Session
+                "turn_id": "turn_001",      // 与 ASR、翻译事件关联到同一句话
+                "service_type": "tts",      // 用量阶段；此事件记录语音合成调用
+                "provider": "tts-provider", // 实际执行语音合成的 Provider 标识
+                "model": "tts-model",       // Provider 使用的语音合成模型标识
+                "input_tokens": 0,           // 当前 TTS 不按文本输入 Token 计量时填 0
+                "output_tokens": 0,          // 当前 TTS 不按文本输出 Token 计量时填 0
+                "audio_duration_ms": 2800,   // 本次 TTS 生成的音频时长，单位毫秒
+                "cost_amount": "0.0028",    // 本次 TTS 成本金额
+                "currency": "USD",          // 与成本金额配套的 ISO 4217 币种
+                "occurred_at": "2026-08-05T10:00:00Z" // TTS 用量实际发生时间
+            }
+        ]
     }
 
-    OutputD =====> Client 输出
+    OutputD =====> Client 输出 Final Turns 查询结果
 
     {
-        "voice_turn": {                      // 客户端可以查询的一条已持久化最终转译记录
-            "turn_id": "turn_001",          // Final Turn 的唯一标识
-            "session_id": "sess_001",       // Final Turn 所属的业务 Session
-            "source_text": "你好，很高兴见到你", // 已确认并长期保存的原文
-            "translated_text": "Hello, nice to meet you", // 已确认并长期保存的译文
-            "participant_id": null,          // 尚未确认说话人时允许为空，后续可异步补充归属
-            "attribution_status": "pending" // participant_id 为空时必须为 pending，表示等待归属
-        },
-        "usage_summary": {                   // 客户端可以查询的会话级用量汇总
-            "session_id": "sess_001",       // 当前用量汇总所属的业务 Session
-            "asr_usage": 3200,               // 当前会话累计的 ASR 用量
-            "translation_usage": 1,          // 当前会话累计的翻译用量
-            "tts_usage": 2800                // 当前会话累计的 TTS 用量
-        }
+        "items": [                           // 当前页已经持久化的 VoiceTurn 列表
+            {
+                "id": "turn_001",           // VoiceTurn 的唯一标识，对应实时侧产生的 Turn ID
+                "session_id": "sess_001",   // VoiceTurn 所属的业务 Session
+                "participant_id": null,      // 尚未确认长期说话人时允许为空
+                "speaker_code": "speaker_pending", // 说话人未确认时使用的临时稳定代码
+                "display_name": null,        // 参与者尚未命名或归属时没有展示名称
+                "provider_speaker_id": null, // Provider 未返回稳定说话人标识时为空
+                "voice_profile_id": null,    // 尚未绑定长期声纹档案时为空
+                "sequence_no": 1,            // 当前 Turn 在 Session 内不可变的顺序号
+                "source_language": "zh-CN", // 当前 Turn 最终确认的源语言
+                "target_language": "en-US", // 当前 Turn 使用的目标语言
+                "language_config_version": 3, // 当前 Turn 开始时固定的语言配置版本
+                "source_text": "你好，很高兴见到你", // 已确认并长期保存的原文
+                "translated_text": "Hello, nice to meet you", // 已确认并长期保存的译文
+                "speaker_confidence": null,  // 暂无可靠说话人判断时置信度为空
+                "attribution_status": "pending", // 当前说话人归属等待后续异步确认
+                "corrected_by": null,        // 尚未发生系统归属修正时为空
+                "started_at": "2026-08-05T09:59:55Z", // 当前 Turn 音频开始时间
+                "ended_at": "2026-08-05T09:59:58Z", // 当前 Turn 音频结束时间
+                "corrected_at": null,        // 尚未发生归属修正时为空
+                "created_at": "2026-08-05T10:00:00Z" // VoiceTurn 成功持久化的时间
+            }
+        ],
+        "next_cursor": null                  // 没有下一页时为空；有下一页时返回继续查询的游标
+    }
+
+    OutputD =====> Client 输出 UsageSummary 查询结果
+
+    {
+        "account_id": "acct_001",           // 当前认证账户；服务端从认证上下文取得
+        "session_id": "sess_001",           // 会话级查询时返回的目标 Session
+        "period_start": "2026-08-05T09:59:55Z", // 本次汇总覆盖的半开时间区间起点
+        "period_end": "2026-08-05T10:00:01Z", // 本次汇总覆盖的半开时间区间终点，不包含该时刻
+        "totals": [                          // 按 service_type 聚合后的多维用量结果
+                {
+                    "service_type": "asr",  // 当前汇总项对应语音识别阶段
+                    "input_tokens": 0,       // ASR 阶段累计的输入 Token 数
+                    "output_tokens": 0,      // ASR 阶段累计的输出 Token 数
+                    "audio_duration_ms": 3200, // ASR 阶段累计处理的音频时长，单位毫秒
+                    "cost_amount": "0.0032", // ASR 阶段累计成本金额
+                    "currency": "USD"       // ASR 成本使用的 ISO 4217 币种
+                },
+                {
+                    "service_type": "translation", // 当前汇总项对应文本翻译阶段
+                    "input_tokens": 8,       // 翻译阶段累计的输入 Token 数
+                    "output_tokens": 6,      // 翻译阶段累计的输出 Token 数
+                    "audio_duration_ms": 0,  // 翻译阶段不按音频时长计量时为 0
+                    "cost_amount": "0.0004", // 翻译阶段累计成本金额
+                    "currency": "USD"       // 翻译成本使用的 ISO 4217 币种
+                },
+                {
+                    "service_type": "tts",  // 当前汇总项对应语音合成阶段
+                    "input_tokens": 0,       // TTS 阶段累计的输入 Token 数
+                    "output_tokens": 0,      // TTS 阶段累计的输出 Token 数
+                    "audio_duration_ms": 2800, // TTS 阶段累计生成的音频时长，单位毫秒
+                    "cost_amount": "0.0028", // TTS 阶段累计成本金额
+                    "currency": "USD"       // TTS 成本使用的 ISO 4217 币种
+                }
+        ]
     }
 }
 ```
 
-`moduleD` 幂等接收 `translation.final`，将最终结果保存为 `VoiceTurn`，并按幂等键记录 ASR、翻译和 TTS 用量。说话人尚未确定时允许 `participant_id = null`，后续可以只修正说话人归属，不重写已经确认的正文和译文。
+`moduleD` 幂等接收 `translation.final`，将最终结果保存为 `VoiceTurn`，并逐条记录已经完成的 Provider 阶段用量。同一个 Turn 最多可以产生 ASR、翻译、TTS 和说话人分离等多条 `usage.recorded`，每条事实都有独立的 `service_type` 和 `idempotency_key`；未执行的阶段不会产生对应事件。Final Turns 与 UsageSummary 是两个独立查询结果，不会在一个 HTTP 响应中一起返回。说话人尚未确定时允许 `participant_id = null`，后续可以只修正说话人归属，不重写已经确认的正文和译文。
 
 关键代码边界：
 
@@ -578,7 +702,7 @@ services/api/internal/usage
 
 说话人暂时无法确认时，参与者编号可以为空，此时归属状态必须是等待确认。后续异步识别出说话人以后，系统只修正说话人归属，不重写已经确认的原文和译文。这保证了最终转译事实不会被随意修改。
 
-对于用量，系统使用唯一的去重标识，防止语音识别、翻译和语音合成的用量因为消息重试而被重复累计。客户端需要查看历史内容时，通过业务服务查询已经持久化的最终话轮。因此，实时通知用于保证即时体验，业务服务返回的持久化结果才是断线恢复和历史展示的权威来源。
+对于用量，系统不是把一个 Turn 的所有调用塞进一条 `items` 数组，而是让每个已经完成的 Provider 阶段分别产生一条 `usage.recorded v1` 事实。ASR、翻译和 TTS 各自拥有独立的事件编号和去重标识，因此某个阶段重试不会让其他阶段被重复累计；如果 TTS 没有启用或没有成功完成，也不会产生对应的 TTS 用量事实。汇总查询再按阶段累计输入 Token、输出 Token、音频时长、成本金额和币种。客户端查询历史内容和用量时会调用两个独立接口，因此 Final Turns 与 UsageSummary 也不是同一个响应。实时通知用于保证即时体验，业务服务返回的持久化结果才是断线恢复、历史展示和用量查询的权威来源。
 
 从代码架构上看，这一部分由 `packages/contracts/records/v1/records.go` 定义最终话轮的完整结构，由 `services/realtime-audio/pipeline/postgres_outbox.go` 和 API 侧的 `recordstore/composition.go` 负责可靠交接，再由记录服务和用量服务分别完成保存。用量主链路可以直接定位到三个函数：`internal/usage/consumer.go` 的 `Consumer.ProcessOnce` 负责取消息并决定 Ack/Nack，`internal/usage/service.go` 的 `UseCases.Record` 负责校验和 Session 归属，`internal/usage/postgres.go` 的 `PostgresRepository.Record` 负责幂等落库；同文件的 `summary` 函数负责最终汇总。这样讲用量时可以沿着“消息消费 -> 业务校验 -> 幂等落库 -> 汇总查询”四步展开，而不需要把整个 usage 目录当成一个黑盒。
 
@@ -659,7 +783,7 @@ REALTIME_TTS_DOWNLINK=opus
   -> DataChannel 发送 playback.started / playback.finished
 ```
 
-因此，当前实现中 `asr.partial` 和 `asr.final` 属于实时服务内部处理事件；`translation.final` 同时服务于客户端展示和后端持久化；`tts.audio` 与 `playback.*` 是否发送，则由 TTS 下行模式决定。`usage.recorded` 是后端事件，不发送给客户端；启用 usage outbox 后才具备持久化和可靠重试能力。
+因此，当前实现中 `asr.partial` 和 `asr.final` 属于实时服务内部处理事件；`translation.final` 同时服务于客户端展示和后端持久化；`tts.audio` 与 `playback.*` 是否发送，则由 TTS 下行模式决定。`usage.recorded` 是后端事件，不发送给客户端；启用 usage outbox 后才具备持久化和可靠重试能力。同一个 Turn 中，ASR、翻译、TTS 或说话人分离会在各自完成时分别产生一条事件，每条事件都使用独立的 `service_type` 和 `idempotency_key`，不存在把多个阶段放进一条事件 `items[]` 的结构。
 
 关键代码边界：
 

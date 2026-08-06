@@ -14,32 +14,47 @@
 sequenceDiagram
     actor User as 用户
     participant Client as Web/Mobile
-    participant API as services/api
-    participant RT as realtime-audio
-    participant Store as Recordstore
+    participant A as moduleA 账户与会话
+    participant B as moduleB 语言与接入
+    participant C as moduleC 实时转译
+    participant D as moduleD 记录与用量
 
     User->>Client: 开始对话
-    Client->>API: 认证、创建 Session
-    Client->>API: 设置语言配置
-    API-->>Client: session_id + realtime ticket
-    Client->>RT: start + WebRTC offer/ICE
-    User->>RT: 发送音频
-    RT->>RT: VAD -> ASR -> Translation -> TTS
-    RT-->>Client: partial/final/playback events
-    RT->>Store: translation.final
-    RT->>API: usage.recorded
-    Client->>API: 查询 Final Turns
-    Client->>API: end session
-    API->>RT: 幂等 Stop
-    RT-->>API: runtime stopped
-    API-->>Client: session ended
+    Client->>A: 认证并创建 Session
+    A-->>B: OutputA 会话身份
+    B-->>C: OutputB 配置与接入授权
+    Client->>C: 建立连接并发送音频
+    C-->>Client: 字幕 播放与状态
+    C-->>D: OutputC 最终事实
+    Client->>D: 查询 Final Turns
+    Client->>A: 结束 Session
 ```
 
-图中的 Recordstore 逻辑上属于 `services/api` 的记录模块。单独画出它，是为了强调实时服务只产生最终事实，长期保存、归属修正和历史查询由记录模块负责。
+这张图只用于建立全局方向，不展开 WebRTC、VAD、可靠事件和停止确认等细节。下面每个模块都有一张局部时序图：当前模块会展开关键判断和处理步骤，其他模块只作为上游输入或下游接收方出现。讲解时先用总览图说明主线，再逐张放大局部链路，避免听众同时理解所有细节。
 
 ## 3. 模块输入输出链路
 
 ### 3.1 moduleA：账户与会话模块
+
+这张图只展开认证和创建业务会话；后续三个模块合并为一个概略接收方：
+
+```mermaid
+sequenceDiagram
+    actor User as 用户
+    participant Client as Web/Mobile
+    participant A as moduleA 账户与会话
+    participant Next as moduleB至moduleD 后续概览
+
+    User->>Client: 点击开始对话
+    rect rgb(239, 248, 244)
+        Note over A: 当前展开 moduleA
+        Client->>A: Bearer Token 和 CreateSession
+        A->>A: 校验 Token 并取得 account_id
+        A->>A: 创建 Session 并保存 created 状态
+        A-->>Client: session_id 和 session_status
+    end
+    A-->>Next: OutputA 已验证的会话身份
+```
 
 ```text
 moduleA = AccountSessionModule {
@@ -76,6 +91,27 @@ moduleA = AccountSessionModule {
 - [services/api/sessions/model.go](https://github.com/Gwen317/xe6-tsy/blob/codex/member5-login-usage-comments/services/api/sessions/model.go)：`VoiceSession`、`StartOperation` 和业务状态模型。
 
 ### 3.2 moduleB：语言配置与实时接入模块
+
+这张图把 `moduleA` 视为已经完成的上游，只展开语言配置快照和实时接入授权：
+
+```mermaid
+sequenceDiagram
+    participant A as moduleA 上游概览
+    participant Client as Web/Mobile
+    participant B as moduleB 语言与接入
+    participant C as moduleC 下游概览
+
+    A-->>B: OutputA account_id 和 session_id
+    rect rgb(239, 248, 244)
+        Note over B: 当前展开 moduleB
+        Client->>B: 提交双语语言配置
+        B->>B: 校验 Session 归属和语言组合
+        B->>B: 保存版本化 LanguageConfigSnapshot
+        B->>B: 签发 Session 级短期 ticket
+        B-->>Client: session_id 配置版本和 ticket
+    end
+    B-->>C: OutputB 配置快照与实时授权
+```
 
 ```text
 moduleB = LanguageAndRealtimeAccessModule {
@@ -127,6 +163,34 @@ moduleB = LanguageAndRealtimeAccessModule {
 - [packages/contracts/realtime/v1/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/packages/contracts/realtime/v1)：Start、Stop、ticket 和运行时协议。
 
 ### 3.3 moduleC：实时转译模块
+
+这张图只详细展开实时服务中的连接、句末检测和处理管线；业务模块在两端保持概略：
+
+```mermaid
+sequenceDiagram
+    participant B as moduleB 上游概览
+    actor User as 用户
+    participant Client as Web/Mobile
+    participant C as moduleC 实时转译
+    participant D as moduleD 下游概览
+
+    B-->>Client: OutputB session_id 配置版本和 ticket
+    rect rgb(239, 248, 244)
+        Note over C: 当前展开 moduleC
+        Client->>C: start 和 WebRTC offer ICE
+        C->>C: 校验 ticket 并固定本 Turn 配置
+        C-->>Client: WebRTC answer ICE
+        User->>Client: 说出一句话
+        Client->>C: WebRTC 音频轨道
+        loop 连续音频帧
+            C->>C: 解码标准化并执行 VAD
+        end
+        C->>C: 句末切分并确认完整 Turn
+        C->>C: ASR final 到翻译再到 TTS
+        C-->>Client: 最终字幕 播放音频与状态事件
+    end
+    C-->>D: OutputC FinalTurn 和 UsageFact
+```
 
 ```text
 moduleC = RealtimeTranslationModule {
@@ -221,10 +285,31 @@ moduleC = RealtimeTranslationModule {
 - [services/realtime-audio/pipeline/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/realtime-audio/pipeline)：ASR、翻译、TTS 和事件交付编排；
 - [services/realtime-audio/asr/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/realtime-audio/asr)、[services/realtime-audio/translate/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/realtime-audio/translate) 与 [services/realtime-audio/tts/](https://github.com/Gwen317/xe6-tsy/tree/codex/member5-login-usage-comments/services/realtime-audio/tts)：外部 Provider 的替换边界。
 
-
-
-
 ### 3.4 moduleD：记录与用量模块
+
+这张图把实时处理压缩为两个最终事实，只展开记录和用量的可靠消费、幂等保存及查询：
+
+```mermaid
+sequenceDiagram
+    participant C as moduleC 上游概览
+    participant Records as moduleD 记录处理
+    participant Usage as moduleD 用量处理
+    participant Client as Web/Mobile
+
+    C-->>Records: FinalTurn 通过可靠事件表
+    C-->>Usage: UsageFact 通过可靠消息流
+    rect rgb(239, 248, 244)
+        Note over Records,Usage: 当前展开 moduleD
+        Records->>Records: 按 event_id 幂等消费
+        Records->>Records: 保存 VoiceTurn 和待定说话人归属
+        Usage->>Usage: 按 idempotency_key 去重
+        Usage->>Usage: 累加 ASR 翻译和 TTS 用量
+        Client->>Records: 查询 Session 的 Final Turns
+        Records-->>Client: 返回持久化 VoiceTurn
+        Client->>Usage: 查询 Session 用量
+        Usage-->>Client: 返回 UsageSummary
+    end
+```
 
 ```text
 moduleD = RecordAndUsageModule {
@@ -293,6 +378,24 @@ moduleD = RecordAndUsageModule {
 ### 3.5 结束会话：moduleA 与 moduleC 协作
 
 结束会话不是新的独立模块，而是 `moduleA` 协调 `moduleC` 完成的一次跨服务停止确认：
+
+```mermaid
+sequenceDiagram
+    participant Client as Web/Mobile
+    participant A as moduleA 账户与会话
+    participant C as moduleC 实时转译
+
+    rect rgb(239, 248, 244)
+        Note over A,C: 当前展开结束会话协作
+        Client->>A: EndSession session_id 和 reason
+        A->>A: 校验账户归属和当前业务状态
+        A->>C: 幂等 Stop session_id
+        C->>C: 停止 Pipeline Track DataChannel 和连接
+        C-->>A: RuntimeStopped 权威快照
+        A->>A: 持久化 Session 为 ended
+        A-->>Client: SessionEnded
+    end
+```
 
 ```text
 moduleA.EndSession {
@@ -375,13 +478,13 @@ services/api/internal/usage
 
 ## 6. 结合时序图与伪代码的纯中文讲解稿
 
-下面这份稿子按“先讲用户故事，再走时序图，最后落到四个模块和关键实现”的顺序组织，正常语速约需八至十分钟。方括号中的内容是讲解提示，不需要念出来。
+下面这份稿子按“先讲用户故事和总览图，再逐张讲局部时序图，最后落到伪代码和关键实现”的顺序组织，正常语速约需八至十分钟。方括号中的内容是讲解提示，不需要念出来。
 
 ### 6.1 开场：先说明架构主线
 
-【指向时序图中的全部参与方】
+【指向总览时序图中的全部参与方】
 
-大家好，下面我结合这张时序图和后面的四段伪代码，介绍这个项目的一次完整实时对话是怎样在系统中流转的。
+大家好，下面我结合一张总览时序图、五张局部时序图和后面的模块伪代码，介绍这个项目的一次完整实时对话是怎样在系统中流转的。
 
 我们先从一个最简单的用户故事开始。用户打开网页端或者移动端，选择中文和英文，然后开始说话。当用户说完一句话后，系统识别原文、完成翻译、播放译文，同时保存这一轮的最终记录和用量。最后，用户主动结束整场会话。
 
@@ -391,7 +494,7 @@ services/api/internal/usage
 
 ### 6.2 第一阶段：认证并创建业务会话
 
-【指向用户、客户端和业务服务之间的前三条消息，再指向第一个模块】
+【切换到 moduleA 局部时序图，指向高亮区域中的认证和创建 Session】
 
 首先，用户在客户端点击开始对话。客户端携带访问凭证调用业务服务，完成身份认证并创建会话。这一段对应第一个模块，也就是账户与会话模块。
 
@@ -403,7 +506,7 @@ services/api/internal/usage
 
 ### 6.3 第二阶段：固定语言配置并取得实时凭证
 
-【指向客户端设置语言、业务服务返回接入信息，再指向第二个模块】
+【切换到 moduleB 局部时序图，指向 OutputA、语言快照和 OutputB】
 
 创建会话后，客户端把用户选择的双语配置提交给业务服务。这一段对应第二个模块，也就是语言配置与实时接入模块。
 
@@ -417,7 +520,7 @@ services/api/internal/usage
 
 ### 6.4 第三阶段：建立实时连接并处理一句话
 
-【指向客户端连接实时音频服务、用户发送音频和内部处理链路，再指向第三个模块】
+【切换到 moduleC 局部时序图，沿高亮区域从 WebRTC 连接讲到 TTS】
 
 拿到短期凭证后，客户端向实时音频服务发起启动请求，并提交连接协商信息和网络候选信息，建立一条实时音频连接。连接建立以后，用户声音通过音频轨道持续上传。
 
@@ -433,7 +536,7 @@ services/api/internal/usage
 
 ### 6.5 第四阶段：区分客户端实时通知和后端可靠事实
 
-【指向实时音频服务发往客户端、记录模块和业务服务的三条消息，再指向第三个模块的输出】
+【继续看 moduleC 局部时序图，对比发往客户端和 moduleD 的两类输出】
 
 完成翻译以后，同一句话会产生两类不同输出。一类用于让客户端立即展示字幕和播放声音，另一类用于让后端可靠保存记录和统计用量。这两类输出的目的和可靠性要求不同，不能混在一起理解。
 
@@ -449,7 +552,7 @@ services/api/internal/usage
 
 ### 6.6 第五阶段：持久化最终话轮和用量
 
-【指向第四个模块和客户端查询最终记录的消息】
+【切换到 moduleD 局部时序图，分别指向记录链路和用量链路】
 
 接下来进入第四个模块，也就是记录与用量模块。它只接收已经确认的最终事实，不保存临时识别结果。
 
@@ -463,7 +566,7 @@ services/api/internal/usage
 
 ### 6.7 第六阶段：可靠结束整个会话
 
-【指向时序图最后五条消息和结束会话控制链路】
+【切换到结束会话局部时序图，沿 moduleA 与 moduleC 的确认链路讲解】
 
 最后看结束会话。客户端向业务服务发出结束请求以后，业务服务不会立即把数据库中的会话标记为已经结束，而是先请求实时音频服务对指定会话执行可以重复调用的停止操作。
 
@@ -475,7 +578,7 @@ services/api/internal/usage
 
 ### 6.8 收尾总结
 
-【重新指向整张时序图】
+【重新指向总览时序图】
 
 总结一下，这套架构可以用一句话概括：业务服务负责“这场会话属于谁、配置是什么、最终留下什么”，实时音频服务负责“这一刻正在听什么、识别什么、翻译什么和播放什么”，客户端负责“采集、播放和展示”，公共契约层负责保证各个模块对数据含义的理解一致。
 

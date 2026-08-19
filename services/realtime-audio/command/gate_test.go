@@ -794,15 +794,15 @@ func TestGateExpiresWithoutAnotherAudioFrame(t *testing.T) {
 	}
 }
 
-func TestGateAcceptsSpeechAfterPostWakePause(t *testing.T) {
-	classifier := speechSequence{true}
+func TestGateUsesVADAfterPostWakePause(t *testing.T) {
+	classifier := speechSequence{true, true}
 	gate, err := NewGate(Dependencies{
 		Classifier:  &classifier,
 		ASR:         asr.NewFakeProvider(asr.FakeProviderConfig{}),
 		Interpreter: testSemanticInterpreter(), Validator: testGateRegistry(t),
 		Executor: &recordingExecutor{},
 	}, Options{
-		WindowTTL: 15 * time.Second, NoSpeechTimeout: 5 * time.Second,
+		WindowTTL: 17 * time.Second, NoSpeechTimeout: 5 * time.Second,
 		MaxAudioDuration: 12 * time.Second, EndSilence: 800 * time.Millisecond,
 	})
 	if err != nil {
@@ -818,6 +818,10 @@ func TestGateAcceptsSpeechAfterPostWakePause(t *testing.T) {
 	result := gate.Consume(t.Context(), testFrame(t, testStart.Add(4*time.Second), 100*time.Millisecond))
 	if !result.Consumed || result.State != StateCapturing {
 		t.Fatalf("Consume() = %#v, want consumed capturing after post-wake pause", result)
+	}
+	result = gate.Consume(t.Context(), testFrame(t, testStart.Add(15*time.Second), 100*time.Millisecond))
+	if !result.Consumed || result.State != StateCapturing {
+		t.Fatalf("Consume() = %#v, want VAD capture beyond the former total window", result)
 	}
 }
 

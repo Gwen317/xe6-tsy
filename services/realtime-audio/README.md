@@ -114,7 +114,8 @@ RTP 与 SCTP 之间没有跨协议全序，边界以服务端提交切换并返�
 服务端以绑定的 Session 和自身接收时间打开 Command Gate，经 Command ASR、AI Interpreter、
 Capability Registry/Validator 和 Executor 执行，最终通过 `command.result` 返回结果。新的
 `signal_id` 会取消尚未完成的旧命令，同 ID 网络重试不会重复执行；模式切换不重建 PeerConnection。
-Gate 在唤醒后最多等待 5 秒首段指令语音，首段语音开始后仍受 15 秒命令窗口限制。
+Gate 在唤醒后最多等待 5 秒首段指令语音；首段语音开始后由命令 VAD 的静音断句收口，
+持续说话时才由 12 秒音频安全边界收口。17 秒总窗口仅覆盖这两个保护边界，不能作为正常断句机制。
 `activate_mode` 可以同时携带显式源语言和目标语言，因此 Qwen 命令入口要求配置 API 内部地址与共享
 令牌：Executor 必须先持久化 API 所有的语言配置，再提交 realtime 模式 CAS，避免成功切换后使用旧语言对。
 命令执行成功后，`command.result` 立即使用 Executor 返回的实际模式、切换状态和 API 已接受的语言配置

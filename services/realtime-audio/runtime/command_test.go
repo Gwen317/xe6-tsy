@@ -20,13 +20,13 @@ import (
 	"github.com/1024XEngineer/xe6-tsy/services/realtime-audio/tts"
 )
 
-func TestDefaultCommandOptionsAllowPauseAfterWakeWord(t *testing.T) {
-	if defaultCommandOptions.WindowTTL != 15*time.Second ||
+func TestDefaultCommandOptionsAllowPauseBeforeVADBoundedCommand(t *testing.T) {
+	if defaultCommandOptions.WindowTTL != 17*time.Second ||
 		defaultCommandOptions.NoSpeechTimeout != 5*time.Second ||
 		defaultCommandOptions.MaxAudioDuration != 12*time.Second ||
 		defaultCommandOptions.EndSilence != 800*time.Millisecond ||
 		defaultCommandOptions.PrefixPadding != 500*time.Millisecond {
-		t.Fatalf("default command options = %#v, want wake-word pause and ordinary VAD bounds", defaultCommandOptions)
+		t.Fatalf("default command options = %#v, want wake-word pause followed by VAD bounds", defaultCommandOptions)
 	}
 }
 

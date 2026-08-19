@@ -73,7 +73,7 @@ import {
 
 const POLL_INTERVAL_MS = 1200;
 const TTS_INPUT_RESUME_DELAY_MS = 300;
-export const COMMAND_UPLINK_TIMEOUT_MS = 15_000;
+export const COMMAND_UPLINK_TIMEOUT_MS = 17_000;
 
 export type SessionDebugInfo = {
   accountId: string | null;

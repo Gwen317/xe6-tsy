@@ -803,7 +803,7 @@ describe("VoiceExperience", () => {
     });
     expect(uplinkTrack.enabled).toBe(true);
     await act(async () => {
-      vi.advanceTimersByTime(15_000);
+      vi.advanceTimersByTime(17_000);
     });
 
     expect(uplinkTrack.enabled).toBe(false);
